@@ -1,411 +1,405 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  isRecordReady, recordCharges, roleLabel, roundedMoney,
+  type Actor, type AuditEntry, type Department, type MonthStatus, type MonthlyRecord,
+  type Payment, type PaymentKind, type PublicUser, type Role,
+} from "@/lib/jmr-core";
 
-type Department = {
-  id: number; meterSection: string; category: string; owner: string; phone: string;
-  occupant: string; occupantNumber: string; rentStart: string; rentEnd: string; active: number;
+type Page = "audit" | "departments" | "invoices" | "payments" | "users" | "history";
+type AuthState = "checking" | "signedOut" | "signedIn";
+type Toast = { message: string; tone: "success" | "error" } | null;
+type DataPayload = {
+  actor: Actor;
+  bootstrap: boolean;
+  departments: Department[];
+  records: MonthlyRecord[];
+  months: MonthStatus[];
+  payments: Payment[];
+  users: PublicUser[];
+  audit: AuditEntry[];
 };
 
-type MonthlyRecord = {
-  id: number; month: string; departmentId: number; meterFee: number; kiloPrice: number;
-  rent: number; services: number; previousReading: number; currentReading: number; locked: number;
-};
+type DepartmentDraft = Omit<Department, "id">;
+type RecordDraft = Pick<MonthlyRecord, "meterFee" | "kiloPrice" | "rent" | "services" | "previousReading" | "currentReading">;
+type UserDraft = { id?: string; username: string; name: string; role: Role; active: number; password: string };
+type PaymentDraft = { recordId: number; kind: PaymentKind; amount: string; paidAt: string; note: string; requestId: string };
 
-const emptyDepartment: Omit<Department, "id"> = {
-  meterSection: "", category: "", owner: "", phone: "", occupant: "",
-  occupantNumber: "", rentStart: "", rentEnd: "", active: 1,
+const emptyDepartment: DepartmentDraft = {
+  meterSection: "", category: "", owner: "", phone: "", occupant: "", occupantNumber: "",
+  rentStart: "", rentEnd: "", active: 1,
 };
-
-const money = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const monthLabel = (value: string) => new Intl.DateTimeFormat("ar-LB", { month: "long", year: "numeric" }).format(new Date(`${value}-01T12:00:00`));
+const currency = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+const monthLabel = (value: string) => new Intl.DateTimeFormat("ar-LB", { month: "long", year: "numeric" }).format(new Date(`${value}-01T12:00:00Z`));
 const currentMonth = () => {
   const parts = new Intl.DateTimeFormat("en", { timeZone: "Asia/Beirut", year: "numeric", month: "2-digit" }).formatToParts(new Date());
-  const year = parts.find(part => part.type === "year")?.value ?? String(new Date().getFullYear());
-  const month = parts.find(part => part.type === "month")?.value ?? String(new Date().getMonth() + 1).padStart(2, "0");
+  const year = parts.find(part => part.type === "year")?.value ?? "2026";
+  const month = parts.find(part => part.type === "month")?.value ?? "01";
   return `${year}-${month}`;
 };
+const today = () => {
+  const parts = new Intl.DateTimeFormat("en", { timeZone: "Asia/Beirut", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
+  const value = (type: string) => parts.find(part => part.type === type)?.value ?? "";
+  return `${value("year")}-${value("month")}-${value("day")}`;
+};
+const pageNames: Record<Page, string> = {
+  audit: "التدقيق الشهري", departments: "الأقسام والمستأجرون", invoices: "الفواتير والطباعة",
+  payments: "التحصيل والإيصالات", users: "المستخدمون والصلاحيات", history: "سجل التعديلات",
+};
 
-type AuthState = "checking" | "signedOut" | "signedIn";
-type ToastState = { message: string; tone: "success" | "error" } | null;
+async function apiJson(response: Response) {
+  const result = await response.json().catch(() => ({ error: "تعذّر قراءة رد الخادم" })) as Record<string, unknown>;
+  if (!response.ok) throw Object.assign(new Error(typeof result.error === "string" ? result.error : "تعذّر إتمام الطلب"), { status: response.status });
+  return result;
+}
 
 export default function Home() {
   const [authState, setAuthState] = useState<AuthState>("checking");
-  const [pin, setPin] = useState("");
-  const [authError, setAuthError] = useState("");
-  const [authBusy, setAuthBusy] = useState(false);
-  const [page, setPage] = useState<"audit" | "departments" | "invoices">("audit");
-  const [departments, setDepartments] = useState<Department[]>([]);
-  const [records, setRecords] = useState<MonthlyRecord[]>([]);
-  const [selectedMonth, setSelectedMonth] = useState(currentMonth);
+  const [username, setUsername] = useState("admin");
+  const [password, setPassword] = useState("");
+  const [data, setData] = useState<DataPayload | null>(null);
+  const [page, setPage] = useState<Page>("audit");
+  const [month, setMonth] = useState(currentMonth);
   const [search, setSearch] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [downloading, setDownloading] = useState(false);
-  const [showDepartmentForm, setShowDepartmentForm] = useState(false);
-  const [showNotifications, setShowNotifications] = useState(false);
-  const [showProfileMenu, setShowProfileMenu] = useState(false);
-  const [notificationsSeen, setNotificationsSeen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [stale, setStale] = useState(false);
+  const [toast, setToast] = useState<Toast>(null);
+  const [departmentEdit, setDepartmentEdit] = useState<{ id?: number; draft: DepartmentDraft } | null>(null);
+  const [recordEdit, setRecordEdit] = useState<{ record: MonthlyRecord; draft: RecordDraft } | null>(null);
+  const [paymentEdit, setPaymentEdit] = useState<PaymentDraft | null>(null);
+  const [voidEdit, setVoidEdit] = useState<{ id: string; reason: string } | null>(null);
+  const [userEdit, setUserEdit] = useState<UserDraft | null>(null);
+  const [receipt, setReceipt] = useState<Payment | null>(null);
   const [invoiceFilter, setInvoiceFilter] = useState<"all" | "rent" | "electricity">("all");
-  const [draft, setDraft] = useState(emptyDepartment);
-  const [toast, setToast] = useState<ToastState>(null);
-  const toastTimer = useRef<number | null>(null);
+  const timer = useRef<number | null>(null);
+  const mutex = useRef(false);
 
   const notify = useCallback((message: string, tone: "success" | "error" = "success") => {
-    if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
+    if (timer.current !== null) window.clearTimeout(timer.current);
     setToast({ message, tone });
-    toastTimer.current = window.setTimeout(() => setToast(null), 3200);
+    timer.current = window.setTimeout(() => setToast(null), 4200);
   }, []);
 
   const refresh = useCallback(async () => {
-    try {
-      const response = await fetch("/api/data", { cache: "no-store" });
-      if (response.status === 401) {
-        setAuthState("signedOut");
-        setDepartments([]);
-        setRecords([]);
-        return;
-      }
-      if (!response.ok) throw new Error("تعذّر تحميل البيانات");
-      const data = await response.json();
-      setDepartments(data.departments ?? []);
-      setRecords(data.records ?? []);
-    } catch (error) {
-      notify(error instanceof Error ? error.message : "تعذّر تحميل البيانات", "error");
-    } finally {
-      setLoading(false);
+    const response = await fetch("/api/data", { cache: "no-store" });
+    if (response.status === 401) {
+      setAuthState("signedOut");
+      setData(null);
+      throw Object.assign(new Error("انتهت الجلسة. سجّل الدخول من جديد"), { status: 401 });
     }
-  }, [notify]);
+    const result = await apiJson(response) as unknown as DataPayload;
+    setData(result);
+    setAuthState("signedIn");
+    setStale(false);
+    return result;
+  }, []);
 
   useEffect(() => {
     let active = true;
-    const checkSession = async () => {
-      try {
-        const response = await fetch("/api/auth/session", { cache: "no-store" });
+    fetch("/api/auth/session", { cache: "no-store" })
+      .then(async response => {
         if (!active) return;
-        if (response.ok) {
-          setAuthState("signedIn");
-          await refresh();
-        } else {
-          setAuthState("signedOut");
-          setLoading(false);
-        }
-      } catch {
-        if (active) {
-          setAuthState("signedOut");
-          setLoading(false);
-        }
-      }
-    };
-    void checkSession();
-    return () => { active = false; };
+        if (!response.ok) { setAuthState("signedOut"); return; }
+        await refresh();
+      })
+      .catch(() => { if (active) setAuthState("signedOut"); });
+    return () => { active = false; if (timer.current !== null) window.clearTimeout(timer.current); };
   }, [refresh]);
 
-  useEffect(() => () => {
-    if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
-  }, []);
+  const run = useCallback(async (work: () => Promise<void>) => {
+    if (mutex.current) return;
+    mutex.current = true;
+    setBusy(true);
+    try { await work(); }
+    catch (error) { notify(error instanceof Error ? error.message : "تعذّر إتمام الطلب", "error"); }
+    finally { mutex.current = false; setBusy(false); }
+  }, [notify]);
 
-  const currentRecords = useMemo(() => records.filter(r => r.month === selectedMonth), [records, selectedMonth]);
-  const activeDepartments = useMemo(() => departments.filter(d => d.active), [departments]);
-  const rows = useMemo(() => currentRecords.map(record => ({ record, department: departments.find(d => d.id === record.departmentId)! })).filter(row => row.department && [row.department.meterSection, row.department.occupant, row.department.occupantNumber].join(" ").toLowerCase().includes(search.toLowerCase())), [currentRecords, departments, search]);
-  const invoiceRows = useMemo(() => currentRecords.map(record => ({ record, department: departments.find(d => d.id === record.departmentId)! })).filter(row => row.department), [currentRecords, departments]);
-  const locked = currentRecords.length > 0 && currentRecords.every(r => r.locked);
-  const totals = currentRecords.reduce((sum, record) => {
-    const usage = record.currentReading - record.previousReading;
-    const subscription = usage * record.kiloPrice + record.meterFee;
-    sum.rent += record.rent; sum.services += record.services; sum.subscription += subscription; sum.total += subscription + record.services + record.rent;
+  async function action(body: Record<string, unknown>) {
+    if (stale) throw new Error("حدّث البيانات أولاً قبل أي تعديل جديد");
+    const response = await fetch("/api/data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (response.status === 401) { setAuthState("signedOut"); setData(null); }
+    const result = await apiJson(response);
+    try { await refresh(); }
+    catch (error) {
+      if ((error as { status?: number }).status !== 401) setStale(true);
+      throw new Error("الطلب وصل للسيرفر، بس تعذّر تحديث الشاشة. اضغط تحديث قبل أي تعديل جديد.");
+    }
+    return result;
+  }
+
+  const selectedStatus = data?.months.find(item => item.month === month) ?? null;
+  const currentRecords = useMemo(() => (data?.records ?? []).filter(record => record.month === month), [data, month]);
+  const locked = Number(selectedStatus?.locked ?? 0) === 1;
+  const complete = currentRecords.filter(isRecordReady);
+  const invoicesReady = locked && currentRecords.length > 0 && complete.length === currentRecords.length;
+  const visibleRecords = currentRecords.filter(record => `${record.meterSection} ${record.occupant} ${record.occupantNumber}`.toLowerCase().includes(search.toLowerCase()));
+  const owner = data?.actor.role === "owner";
+  const writer = data?.actor.role !== "viewer";
+  const formOpen = Boolean(departmentEdit || recordEdit || paymentEdit || voidEdit || userEdit);
+  const disabled = busy || stale || formOpen;
+
+  const totals = complete.reduce((sum, record) => {
+    const charges = recordCharges(record);
+    sum.rent += charges.rent;
+    sum.electricity += charges.electricity;
+    sum.total += charges.total;
     return sum;
-  }, { rent: 0, services: 0, subscription: 0, total: 0 });
+  }, { rent: 0, electricity: 0, total: 0 });
+  const paidTotal = (data?.payments ?? []).filter(payment => !payment.voidedAt && currentRecords.some(record => record.id === payment.recordId))
+    .reduce((sum, payment) => sum + Number(payment.amount), 0);
+  const missingDepartments = (data?.departments ?? []).filter(department => department.active === 1 && !currentRecords.some(record => record.departmentId === department.id));
+  const monthPayments = (data?.payments ?? []).filter(payment => currentRecords.some(record => record.id === payment.recordId));
 
-  const api = async (body: unknown) => {
-    setSaving(true);
-    try {
-      const response = await fetch("/api/data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      if (response.status === 401) {
-        setAuthState("signedOut");
-        throw new Error("انتهت الجلسة. أدخل رمز الدخول من جديد");
-      }
-      if (!response.ok) {
-        const result = await response.json().catch(() => null) as { error?: string } | null;
-        throw new Error(result?.error ?? "تعذّر حفظ التغييرات");
-      }
-      await refresh();
-    } finally {
-      setSaving(false);
-    }
-  };
+  function paidFor(recordId: number, kind: PaymentKind) {
+    return roundedMoney((data?.payments ?? []).filter(payment => payment.recordId === recordId && payment.kind === kind && !payment.voidedAt)
+      .reduce((sum, payment) => sum + Number(payment.amount), 0));
+  }
 
-  const createMonth = async () => {
-    try {
-      await api({ action: "createMonth", month: selectedMonth });
-      notify("تم تجهيز الشهر ونقل القراءات السابقة");
-    } catch (error) {
-      notify(error instanceof Error ? error.message : "تعذّر إنشاء الشهر", "error");
-    }
-  };
-
-  const updateRecord = (id: number, field: keyof MonthlyRecord, value: number) => {
-    setRecords(old => old.map(r => r.id === id ? { ...r, [field]: value } : r));
-  };
-
-  const saveRecord = async (record: MonthlyRecord) => {
-    if (record.currentReading < record.previousReading) {
-      notify("العداد الحالي يجب أن يكون أكبر من أو يساوي العداد السابق", "error");
-      return;
-    }
-    try {
-      await api({ action: "updateRecord", record });
-      notify("تم الحفظ");
-    } catch (error) {
-      notify(error instanceof Error ? error.message : "تعذّر الحفظ", "error");
-    }
-  };
-
-  const addDepartment = async (event: React.FormEvent) => {
+  async function signIn(event: React.FormEvent) {
     event.preventDefault();
-    try {
-      await api({ action: "addDepartment", department: draft, month: selectedMonth });
-      setDraft(emptyDepartment);
-      setShowDepartmentForm(false);
-      notify("تمت إضافة القسم وتجهيز فواتيره للشهر");
-    } catch (error) {
-      notify(error instanceof Error ? error.message : "تعذّرت إضافة القسم", "error");
-    }
-  };
-
-  const toggleLock = async () => {
-    try {
-      await api({ action: "lockMonth", month: selectedMonth, locked: locked ? 0 : 1 });
-      notify(locked ? "تم فتح الشهر للتعديل" : "تم اعتماد وإقفال الشهر");
-    } catch (error) {
-      notify(error instanceof Error ? error.message : "تعذّر تغيير حالة الشهر", "error");
-    }
-  };
-
-  const submitPin = async (event: React.FormEvent) => {
-    event.preventDefault();
-    setAuthError("");
-    if (!/^\d{4,8}$/.test(pin)) {
-      setAuthError("أدخل رمزاً من 4 إلى 8 أرقام");
-      return;
-    }
-    setAuthBusy(true);
-    try {
-      const response = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pin }),
-      });
-      const result = await response.json().catch(() => null) as { error?: string } | null;
-      if (!response.ok) {
-        if (response.status === 429) setAuthError("محاولات كثيرة. انتظر قليلاً ثم حاول مجدداً");
-        else if (response.status === 401) setAuthError("رمز الدخول غير صحيح");
-        else if (result?.error === "AUTH_NOT_CONFIGURED") setAuthError("رمز الدخول لم يُضبط بعد");
-        else setAuthError("تعذّر التحقق من رمز الدخول");
-        return;
-      }
-      setPin("");
-      setLoading(true);
-      setAuthState("signedIn");
+    await run(async () => {
+      const response = await fetch("/api/auth/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, password }) });
+      await apiJson(response);
+      setPassword("");
       await refresh();
-    } catch {
-      setAuthError("تعذّر الاتصال بالنظام. حاول مجدداً");
-    } finally {
-      setAuthBusy(false);
-    }
-  };
+      notify("تم تسجيل الدخول");
+    });
+  }
 
-  const logout = async () => {
-    setAuthBusy(true);
-    try {
+  async function logout() {
+    await run(async () => {
       await fetch("/api/auth/logout", { method: "POST" });
-    } finally {
-      setDepartments([]);
-      setRecords([]);
-      setPage("audit");
-      setShowProfileMenu(false);
-      setShowNotifications(false);
-      setAuthState("signedOut");
-      setAuthBusy(false);
-    }
-  };
+      setData(null); setAuthState("signedOut"); setPage("audit");
+    });
+  }
 
-  const downloadExcel = async () => {
-    setDownloading(true);
-    try {
-      const response = await fetch(`/api/export?month=${encodeURIComponent(selectedMonth)}`);
-      if (response.status === 401) {
-        setAuthState("signedOut");
-        throw new Error("انتهت الجلسة. أدخل رمز الدخول من جديد");
+  async function saveDepartment(event: React.FormEvent) {
+    event.preventDefault();
+    if (!departmentEdit) return;
+    await run(async () => {
+      const result = await action({ action: departmentEdit.id ? "updateDepartment" : "addDepartment", id: departmentEdit.id, department: departmentEdit.draft, month });
+      setDepartmentEdit(null);
+      notify(String(result.message ?? "تم الحفظ"));
+    });
+  }
+
+  async function saveRecord(event: React.FormEvent) {
+    event.preventDefault();
+    if (!recordEdit) return;
+    await run(async () => {
+      const result = await action({ action: "updateRecord", id: recordEdit.record.id, expectedRevision: recordEdit.record.revision, record: recordEdit.draft });
+      setRecordEdit(null);
+      notify(String(result.message ?? "تم الحفظ"));
+    });
+  }
+
+  async function savePayment(event: React.FormEvent) {
+    event.preventDefault();
+    if (!paymentEdit) return;
+    await run(async () => {
+      const result = await action({ action: "addPayment", ...paymentEdit, amount: Number(paymentEdit.amount) });
+      setPaymentEdit(null);
+      notify(String(result.message ?? "تم تسجيل الدفعة"));
+    });
+  }
+
+  async function saveUser(event: React.FormEvent) {
+    event.preventDefault();
+    if (!userEdit || !data) return;
+    await run(async () => {
+      const response = await fetch("/api/data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+        action: "saveUser", id: userEdit.id, user: { username: userEdit.username, name: userEdit.name, role: userEdit.role, active: userEdit.active }, password: userEdit.password,
+      }) });
+      const result = await apiJson(response);
+      setUserEdit(null);
+      if (data.bootstrap) {
+        setData(null); setAuthState("signedOut");
+        notify("تم إنشاء حساب المالك. سجّل الدخول بالحساب الجديد.");
+      } else {
+        await refresh(); notify(String(result.message ?? "تم حفظ المستخدم"));
       }
-      if (!response.ok) throw new Error("تعذّر تجهيز ملف Excel");
+    });
+  }
+
+  async function downloadExcel() {
+    await run(async () => {
+      const response = await fetch(`/api/export?month=${encodeURIComponent(month)}`, { cache: "no-store" });
+      if (!response.ok) { await apiJson(response); return; }
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = `By-JMR-Mall-${selectedMonth}.xlsx`;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      URL.revokeObjectURL(url);
+      anchor.href = url; anchor.download = `By-JMR-Mall-${month}.xlsx`; document.body.appendChild(anchor); anchor.click(); anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
       notify("تم تجهيز ملف Excel");
-    } catch (error) {
-      notify(error instanceof Error ? error.message : "تعذّر تنزيل ملف Excel", "error");
-    } finally {
-      setDownloading(false);
-    }
-  };
-
-  if (authState === "checking") {
-    return <main className="auth-shell" dir="rtl"><div className="auth-loading"><span className="brand-mark">J</span><p>جاري تأمين النظام…</p></div></main>;
+    });
   }
 
-  if (authState === "signedOut") {
-    return (
-      <main className="auth-shell" dir="rtl">
-        <section className="login-card" aria-labelledby="login-title">
-          <div className="login-brand"><span className="brand-mark">J</span><div><strong>BY JMR</strong><small>MALL AUDIT SYSTEM</small></div></div>
-          <div className="login-copy"><span className="lock-mark">●</span><h1 id="login-title">تسجيل الدخول</h1><p>أدخل رمز الـ PIN للوصول إلى نظام التدقيق</p></div>
-          <form onSubmit={submitPin}>
-            <label className="pin-field"><span>رمز الدخول</span><input autoFocus autoComplete="current-password" inputMode="numeric" pattern="[0-9]*" type="password" maxLength={8} value={pin} onChange={event => setPin(event.target.value.replace(/\D/g, ""))} placeholder="••••" aria-describedby={authError ? "pin-error" : undefined} /></label>
-            {authError && <p className="auth-error" id="pin-error" role="alert">{authError}</p>}
-            <button className="primary login-button" disabled={authBusy || pin.length < 4}>{authBusy ? "جاري التحقق…" : "دخول آمن"}</button>
-          </form>
-          <p className="login-foot">البيانات مشفّرة والجلسة تُغلق تلقائياً بعد 12 ساعة</p>
-        </section>
-      </main>
-    );
+  function startRecord(record: MonthlyRecord) {
+    setRecordEdit({ record, draft: {
+      meterFee: record.meterFee, kiloPrice: record.kiloPrice, rent: record.rent, services: record.services,
+      previousReading: record.previousReading, currentReading: record.currentReading,
+    } });
   }
+
+  function printReceipt(payment: Payment) {
+    setReceipt(payment);
+    window.setTimeout(() => window.print(), 80);
+  }
+
+  if (authState === "checking") return <main className="auth-shell" dir="rtl"><div className="auth-loading"><span className="brand-mark">J</span><p>جاري تحميل النظام…</p></div></main>;
+
+  if (authState === "signedOut") return (
+    <main className="auth-shell" dir="rtl">
+      <section className="login-card">
+        <div className="login-brand"><span className="brand-mark">J</span><div><strong>BY JMR</strong><small>MALL AUDIT SYSTEM</small></div></div>
+        <div className="login-copy"><h1>تسجيل الدخول</h1><p>حساب شخصي وصلاحيات منفصلة لكل مستخدم.</p></div>
+        <form onSubmit={signIn}>
+          <Field label="اسم المستخدم" value={username} onChange={setUsername} required autoComplete="username" />
+          <Field label="كلمة المرور" type="password" value={password} onChange={setPassword} required autoComplete="current-password" />
+          <button className="primary login-button" disabled={busy}>{busy ? "جاري التحقق…" : "دخول آمن"}</button>
+        </form>
+        <p className="login-foot">بالإعداد الأول: اسم المستخدم الافتراضي admin وكلمة المرور من JMR_ADMIN_PASSWORD.</p>
+      </section>
+      {toast && <ToastView toast={toast} />}
+    </main>
+  );
+
+  if (!data) return null;
+  const navPages = (Object.keys(pageNames) as Page[]).filter(item => owner || (item !== "users" && item !== "history"));
 
   return (
-    <main className={`app-shell page-${page}`} dir="rtl">
+    <main className={`app-shell page-${page} ${receipt ? "printing-receipt" : ""}`} dir="rtl">
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark">J</span><div><strong>BY JMR</strong><small>MALL AUDIT SYSTEM</small></div></div>
-        <nav>
-          <button type="button" aria-current={page === "audit" ? "page" : undefined} className={page === "audit" ? "active" : ""} onClick={() => setPage("audit")}><span>▦</span> التدقيق الشهري</button>
-          <button type="button" aria-current={page === "departments" ? "page" : undefined} className={page === "departments" ? "active" : ""} onClick={() => setPage("departments")}><span>⌂</span> بيانات الأقسام</button>
-          <button type="button" aria-current={page === "invoices" ? "page" : undefined} className={page === "invoices" ? "active" : ""} onClick={() => setPage("invoices")}><span>▤</span> الفواتير والطباعة</button>
-        </nav>
-        <div className="side-note"><span className="status-dot" /> النظام متصل ومحفوظ<small>آخر مزامنة: الآن</small></div>
-        <div className="profile-area">
-          <button type="button" className="profile profile-trigger" aria-label="قائمة الحساب" aria-expanded={showProfileMenu} onClick={() => { setShowProfileMenu(value => !value); setShowNotifications(false); }}><span className="avatar">JH</span><span className="profile-copy"><strong>Jad Harb</strong><small>المالك · مدير النظام</small></span><span aria-hidden="true">⋮</span></button>
-          {showProfileMenu && <div className="profile-menu"><strong>Jad Harb</strong><small>جلسة دخول آمنة</small><button type="button" onClick={() => void logout()} disabled={authBusy}>تسجيل الخروج</button></div>}
-        </div>
+        <nav>{navPages.map(item => <button key={item} type="button" className={page === item ? "active" : ""} aria-current={page === item ? "page" : undefined} disabled={formOpen || busy} onClick={() => { setPage(item); setSearch(""); }}>{pageNames[item]}</button>)}</nav>
+        <div className="side-note"><strong>{data.actor.name}</strong><small>{roleLabel(data.actor.role)}</small><button className="secondary" disabled={busy || formOpen} onClick={() => void logout()}>تسجيل الخروج</button></div>
       </aside>
 
       <section className="workspace">
         <header className="topbar">
-          <div><p className="eyebrow">BY JMR MALL</p><h1>{page === "audit" ? "التدقيق الشهري" : page === "departments" ? "بيانات الأقسام والمستأجرين" : "الفواتير الشهرية"}</h1><p>{page === "audit" ? "مراجعة استهلاك العدادات ومستحقات الأقسام" : page === "departments" ? "المرجع الأساسي للأقسام والعقود والمستأجرين" : "فواتير الإيجار والكهرباء جاهزة للطباعة"}</p></div>
-          <div className="top-actions">
-            <span className={`save-state ${saving ? "saving" : ""}`}>{saving ? "جاري الحفظ…" : "✓ جميع التغييرات محفوظة"}</span>
-            <div className="notification-area">
-              <button type="button" className="icon-btn" aria-label="الإشعارات" aria-expanded={showNotifications} onClick={() => { setShowNotifications(value => !value); setNotificationsSeen(true); setShowProfileMenu(false); }}>♢{!notificationsSeen && <i />}</button>
-              {showNotifications && <section className="notification-panel" aria-label="إشعارات النظام"><header><strong>إشعارات النظام</strong><button type="button" aria-label="إغلاق الإشعارات" onClick={() => setShowNotifications(false)}>×</button></header><div className="notice-item"><span className="status-dot" /><div><strong>النظام متصل</strong><small>كل البيانات محفوظة في قاعدة البيانات</small></div></div><div className="notice-item"><span className={locked ? "notice-dot locked" : "notice-dot"} /><div><strong>{currentRecords.length === 0 ? "الشهر غير مُنشأ" : locked ? "الشهر معتمد" : "الشهر قيد التعديل"}</strong><small>{monthLabel(selectedMonth)} · {currentRecords.length} سجل</small></div></div><div className="notice-item"><span className="notice-dot invoice" /><div><strong>الفواتير</strong><small>{invoiceRows.length ? `${invoiceRows.length * 2} فاتورة جاهزة للمعاينة` : "تظهر بعد إنشاء سجل الشهر"}</small></div></div></section>}
-            </div>
-            <button type="button" className="mobile-logout" aria-label="تسجيل الخروج" onClick={() => void logout()}>خروج</button>
-          </div>
+          <div><p className="eyebrow">BY JMR MALL</p><h1>{pageNames[page]}</h1><p>أرقام ثابتة، صلاحيات واضحة، وسجل كامل لكل تعديل.</p></div>
+          <div className="top-actions"><span className={`save-state ${stale ? "error-text" : ""}`}>{busy ? "جاري تنفيذ الطلب…" : stale ? "العرض يحتاج تحديث قبل أي تعديل" : "✓ البيانات متزامنة"}</span><button className="secondary" disabled={busy || formOpen} onClick={() => void run(async () => { await refresh(); notify("تم تحديث البيانات"); })}>تحديث</button></div>
         </header>
 
-        {page === "audit" ? (
-          <>
-            <div className="toolbar">
-              <div className="month-control"><button type="button" aria-label="الشهر السابق" onClick={() => setSelectedMonth(previousMonth(selectedMonth, 1))}>‹</button><label><span>الفترة الحالية</span><input type="month" value={selectedMonth} onChange={e => { if (e.target.value) setSelectedMonth(e.target.value); }} /></label><button type="button" aria-label="الشهر التالي" onClick={() => setSelectedMonth(previousMonth(selectedMonth, -1))}>›</button></div>
-              <div className="toolbar-actions"><button type="button" className="secondary" onClick={() => void downloadExcel()} disabled={downloading}>{downloading ? "جاري التجهيز…" : "↓ تحميل Excel"}</button><button type="button" className="secondary" onClick={() => window.print()} disabled={currentRecords.length === 0}>طباعة</button>{currentRecords.length > 0 && <button type="button" className={locked ? "secondary" : "primary"} onClick={() => void toggleLock()} disabled={saving}>{locked ? "فتح الشهر" : "اعتماد الشهر"} {locked ? "↻" : "✓"}</button>}</div>
-            </div>
+        {data.bootstrap && <div className="notice-banner"><strong>إعداد أول مرة:</strong> أنشئ حساب مالك قوي. بعده حساب الإعداد بيتوقف تلقائياً.<button className="primary" disabled={busy || formOpen} onClick={() => { setPage("users"); setUserEdit({ username: "", name: "", role: "owner", active: 1, password: "" }); }}>إنشاء حساب المالك</button></div>}
+        {stale && <div className="notice-banner error">توقّف التعديل مؤقتاً. اضغط تحديث وتأكد من الأرقام قبل المتابعة.</div>}
 
-            <div className="stats">
-              <Stat label="إجمالي الإيجارات" value={totals.rent} accent="blue" />
-              <Stat label="إجمالي الخدمات" value={totals.services} accent="amber" />
-              <Stat label="قيمة الاشتراك" value={totals.subscription} accent="violet" />
-              <Stat label="المجموع" value={totals.total} accent="green" featured />
-            </div>
+        {(page === "audit" || page === "invoices" || page === "payments") && <div className="toolbar">
+          <label className="month-picker">الشهر<input type="month" value={month} min="2000-01" max="2099-12" disabled={busy || formOpen} onChange={event => event.target.value && setMonth(event.target.value)} /></label>
+          <div className="toolbar-actions"><span className={`status-pill ${locked ? "approved" : ""}`}>{selectedStatus ? locked ? "معتمد" : "مسودة" : "غير مُنشأ"}</span>{invoicesReady && <button className="secondary" disabled={disabled} onClick={() => void downloadExcel()}>تحميل Excel</button>}</div>
+        </div>}
 
-            <section className="panel">
-              <div className="panel-head"><div><h2>سجل {monthLabel(selectedMonth)}</h2><p>{rows.length} من أصل {activeDepartments.length} قسم فعّال</p></div><div className="search"><span>⌕</span><input aria-label="بحث بالاسم أو القسم أو العداد" placeholder="بحث بالاسم، القسم أو العداد…" value={search} onChange={e => setSearch(e.target.value)} /></div></div>
-              {loading ? <div className="empty">جاري تحميل البيانات…</div> : currentRecords.length === 0 ? (
-                <div className="empty"><div className="empty-icon">＋</div><h3>لم يتم إنشاء سجل لهذا الشهر</h3><p>سيتم إضافة الأقسام الفعّالة ونقل العداد الحالي من الشهر السابق تلقائياً.</p><button type="button" className="primary" onClick={() => void createMonth()} disabled={saving}>إنشاء سجل {monthLabel(selectedMonth)}</button></div>
-              ) : (
-                <div className="table-wrap"><table><thead><tr><th>عداد / قسم</th><th>اسم المستثمر</th><th>رقم المستثمر</th><th>رسم العداد</th><th>سعر الكيلو</th><th>قيمة الإيجار</th><th>قيمة الخدمات</th><th>العداد السابق</th><th>العداد الحالي</th><th>صرف العداد</th><th>قيمة الاشتراك</th><th>المجموع</th></tr></thead><tbody>
-                  {rows.map(({ record, department }) => {
-                    const difference = record.currentReading - record.previousReading;
-                    const subscription = difference * record.kiloPrice + record.meterFee;
-                    const total = subscription + record.services + record.rent;
-                    const hasPreviousMonth = records.some(candidate => candidate.departmentId === record.departmentId && candidate.month < record.month);
-                    return <tr key={record.id} className={difference < 0 ? "invalid" : ""}><td><strong>{department.meterSection}</strong><small>{department.category}</small></td><td>{department.occupant}</td><td className="mono">{department.occupantNumber}</td>{(["meterFee", "kiloPrice", "rent", "services", "previousReading", "currentReading"] as (keyof MonthlyRecord)[]).map(field => <td key={field}><input className="cell-input" aria-label={`${fieldLabel(field)} — ${department.meterSection}`} type="number" min="0" step="0.01" disabled={locked || saving || (field === "previousReading" && hasPreviousMonth)} value={record[field] as number} onChange={e => updateRecord(record.id, field, Number(e.target.value))} onKeyDown={event => { if (event.key === "Enter") event.currentTarget.blur(); }} onBlur={() => void saveRecord(records.find(r => r.id === record.id) ?? record)} /></td>)}<td className={difference < 0 ? "danger" : "mono strong"}>{difference}</td><td className="money">${money.format(subscription)}</td><td className="money total">${money.format(total)}</td></tr>;
-                  })}
-                </tbody><tfoot><tr><td colSpan={9}>المجموع الشهري</td><td>—</td><td>${money.format(totals.subscription)}</td><td>${money.format(totals.total)}</td></tr></tfoot></table></div>
-              )}
-            </section>
-          </>
-        ) : page === "departments" ? (
-          <section className="panel departments-panel">
-            <div className="panel-head"><div><h2>الأقسام المسجّلة</h2><p>{departments.length} سجل في قاعدة البيانات</p></div><button type="button" className="primary" onClick={() => setShowDepartmentForm(true)} disabled={saving}>＋ إضافة قسم جديد</button></div>
-            {showDepartmentForm && <form className="department-form" onSubmit={addDepartment}><div className="form-title"><h3>إضافة قسم أو عداد</h3><button type="button" aria-label="إغلاق نموذج إضافة القسم" onClick={() => { setShowDepartmentForm(false); setDraft(emptyDepartment); }}>×</button></div><div className="form-grid">
-              <Field label="عداد / قسم" value={draft.meterSection} onChange={v => setDraft({ ...draft, meterSection: v })} required />
-              <Field label="نوعية القسم" value={draft.category} onChange={v => setDraft({ ...draft, category: v })} required />
-              <Field label="صاحب القسم" value={draft.owner} onChange={v => setDraft({ ...draft, owner: v })} />
-              <Field label="رقم التلفون" value={draft.phone} onChange={v => setDraft({ ...draft, phone: v })} type="tel" />
-              <Field label="مستخدم القسم" value={draft.occupant} onChange={v => setDraft({ ...draft, occupant: v })} required />
-              <Field label="رقم المستخدم" value={draft.occupantNumber} onChange={v => setDraft({ ...draft, occupantNumber: v })} />
-              <Field label="تاريخ بدء الإيجار" value={draft.rentStart} onChange={v => setDraft({ ...draft, rentStart: v })} type="date" />
-              <Field label="تاريخ انتهاء الإيجار" value={draft.rentEnd} onChange={v => setDraft({ ...draft, rentEnd: v })} type="date" />
-            </div><div className="form-actions"><button type="button" className="secondary" onClick={() => { setShowDepartmentForm(false); setDraft(emptyDepartment); }} disabled={saving}>إلغاء</button><button className="primary" disabled={saving}>{saving ? "جاري الحفظ…" : "حفظ القسم"}</button></div></form>}
-            <div className="table-wrap"><table className="departments-table"><thead><tr><th>عداد / قسم</th><th>نوعية القسم</th><th>صاحب القسم</th><th>رقم التلفون</th><th>مستخدم القسم</th><th>رقم المستخدم</th><th>تاريخ بدء الإيجار</th><th>تاريخ انتهاء الإيجار</th></tr></thead><tbody>{departments.map(d => <tr key={d.id}><td><strong>{d.meterSection}</strong></td><td>{d.category}</td><td>{d.owner}</td><td className="mono">{d.phone}</td><td>{d.occupant}</td><td className="mono">{d.occupantNumber}</td><td>{d.rentStart || "—"}</td><td>{d.rentEnd || "—"}</td></tr>)}</tbody></table></div>
-          </section>
-        ) : (
-          <section className="invoice-page">
-            <div className="invoice-controls">
-              <div className="month-control"><button type="button" aria-label="الشهر السابق" onClick={() => setSelectedMonth(previousMonth(selectedMonth, 1))}>‹</button><label><span>شهر الفواتير</span><input type="month" value={selectedMonth} onChange={e => { if (e.target.value) setSelectedMonth(e.target.value); }} /></label><button type="button" aria-label="الشهر التالي" onClick={() => setSelectedMonth(previousMonth(selectedMonth, -1))}>›</button></div>
-              <div className="invoice-filter" role="group" aria-label="نوع الفواتير">
-                <button type="button" aria-pressed={invoiceFilter === "all"} className={invoiceFilter === "all" ? "active" : ""} onClick={() => setInvoiceFilter("all")}>الكل</button>
-                <button type="button" aria-pressed={invoiceFilter === "rent"} className={invoiceFilter === "rent" ? "active" : ""} onClick={() => setInvoiceFilter("rent")}>الإيجار</button>
-                <button type="button" aria-pressed={invoiceFilter === "electricity"} className={invoiceFilter === "electricity" ? "active" : ""} onClick={() => setInvoiceFilter("electricity")}>الكهرباء فقط</button>
-              </div>
-              <button type="button" className="primary print-invoices" onClick={() => window.print()} disabled={invoiceRows.length === 0}>طباعة الفواتير ▣</button>
-            </div>
-            {loading ? <div className="empty invoice-empty">جاري تجهيز الفواتير…</div> : invoiceRows.length === 0 ? (
-              <div className="empty invoice-empty"><div className="empty-icon">▤</div><h3>لا توجد فواتير لهذا الشهر</h3><p>أنشئ سجل الشهر أولاً، وبعد تعبئة الأرقام تصبح فواتير الإيجار والكهرباء جاهزة تلقائياً.</p><button type="button" className="primary" onClick={() => void createMonth()} disabled={saving}>إنشاء سجل {monthLabel(selectedMonth)}</button></div>
-            ) : (
-              <div className="invoice-sheet">
-                <div className="invoice-sheet-head"><div><span>معاينة الطباعة</span><strong>{monthLabel(selectedMonth)}</strong></div><small>{invoiceRows.length} مستثمر · {invoiceFilter === "all" ? invoiceRows.length * 2 : invoiceRows.length} فاتورة</small></div>
-                <div className="invoice-grid">
-                  {invoiceRows.flatMap(({ record, department }) => {
-                    const cards = [];
-                    if (invoiceFilter === "all" || invoiceFilter === "rent") cards.push(<RentInvoice key={`rent-${record.id}`} month={selectedMonth} department={department} record={record} />);
-                    if (invoiceFilter === "all" || invoiceFilter === "electricity") cards.push(<ElectricityInvoice key={`electricity-${record.id}`} month={selectedMonth} department={department} record={record} />);
-                    return cards;
-                  })}
-                </div>
-              </div>
-            )}
-          </section>
-        )}
+        {(page === "audit" || page === "payments") && <div className="stats">
+          <Stat label="الإيجار والخدمات" value={totals.rent} />
+          <Stat label="الكهرباء" value={totals.electricity} />
+          <Stat label="المحصّل" value={paidTotal} />
+          <Stat label="المتبقي" value={roundedMoney(totals.total - paidTotal)} />
+        </div>}
+
+        {page === "audit" && <section className="panel">
+          <div className="panel-head"><div><h2>{monthLabel(month)}</h2><p>{complete.length} / {currentRecords.length} سجل مكتمل</p></div><div className="toolbar-actions"><input className="search-input" aria-label="بحث" placeholder="بحث بالقسم أو المستثمر…" value={search} onChange={event => setSearch(event.target.value)} />{owner && selectedStatus && <button className="primary" disabled={disabled || data.bootstrap} onClick={() => void run(async () => { const result = await action({ action: "lockMonth", month, locked: locked ? 0 : 1 }); notify(String(result.message ?? "تم")); })}>{locked ? "إعادة فتح الشهر" : "اعتماد الشهر"}</button>}</div></div>
+          {!selectedStatus ? <div className="empty"><h3>الشهر غير مُنشأ</h3><p>الشهر الجديد بياخد القراءة النهائية من الشهر المعتمد السابق، لكن بيضل غير مكتمل لحد ما تراجع وتحفظ كل سجل.</p>{writer && <button className="primary" disabled={disabled || data.bootstrap} onClick={() => void run(async () => { const result = await action({ action: "createMonth", month }); notify(String(result.message ?? "تم إنشاء الشهر")); })}>إنشاء الشهر</button>}</div> : <div className="table-wrap"><table><thead><tr><th>القسم / المستثمر</th><th>السابقة</th><th>الحالية</th><th>الاستهلاك</th><th>الإيجار والخدمات</th><th>الكهرباء</th><th>المجموع</th><th>الحالة</th><th>إجراء</th></tr></thead><tbody>{visibleRecords.map(record => {
+            const charges = recordCharges(record);
+            return <tr key={record.id}><td><strong>{record.meterSection}</strong><small>{record.occupant}</small></td><td>{record.previousReading}</td><td>{record.currentReading}</td><td>{charges.usage}</td><td>{currency.format(charges.rent)}</td><td>{currency.format(charges.electricity)}</td><td>{currency.format(charges.total)}</td><td>{isRecordReady(record) ? "مكتمل" : "يحتاج مراجعة"}</td><td>{writer && !locked && <button className="secondary" disabled={disabled || data.bootstrap} onClick={() => startRecord(record)}>مراجعة وحفظ</button>}</td></tr>;
+          })}</tbody></table></div>}
+          {selectedStatus && !locked && missingDepartments.length > 0 && <div className="panel-footer"><strong>أقسام فعّالة مش موجودة بهالشهر:</strong>{missingDepartments.map(department => <button key={department.id} className="secondary" disabled={disabled || data.bootstrap} onClick={() => void run(async () => { const result = await action({ action: "addToMonth", month, departmentId: department.id }); notify(String(result.message ?? "تمت الإضافة")); })}>إضافة {department.meterSection}</button>)}</div>}
+        </section>}
+
+        {page === "departments" && <section className="panel">
+          <div className="panel-head"><div><h2>الأقسام والعقود</h2><p>أي تعديل جديد ما بيغيّر نسخة المستأجر الموجودة بالفواتير السابقة.</p></div>{writer && <button className="primary" disabled={disabled || data.bootstrap} onClick={() => setDepartmentEdit({ draft: { ...emptyDepartment } })}>إضافة قسم</button>}</div>
+          <div className="table-wrap"><table><thead><tr><th>القسم</th><th>النوع</th><th>المالك</th><th>المستثمر</th><th>العقد</th><th>الحالة</th><th>إجراء</th></tr></thead><tbody>{data.departments.map(department => <tr key={department.id}><td>{department.meterSection}</td><td>{department.category}</td><td>{department.owner}<small>{department.phone}</small></td><td>{department.occupant}<small>{department.occupantNumber}</small></td><td>{department.rentStart || "—"}<small>{department.rentEnd || "—"}</small></td><td>{department.active ? "فعّال" : "مؤرشف"}</td><td>{writer && <button className="secondary" disabled={disabled || data.bootstrap} onClick={() => setDepartmentEdit({ id: department.id, draft: { ...department } })}>تعديل / أرشفة</button>}</td></tr>)}</tbody></table></div>
+        </section>}
+
+        {page === "invoices" && <section className="invoice-page">
+          <div className="invoice-controls"><div className="invoice-filter" role="group" aria-label="نوع الفاتورة">{(["all", "rent", "electricity"] as const).map(kind => <button key={kind} className={invoiceFilter === kind ? "active" : ""} aria-pressed={invoiceFilter === kind} onClick={() => setInvoiceFilter(kind)}>{kind === "all" ? "الكل" : kind === "rent" ? "الإيجار" : "الكهرباء"}</button>)}</div><button className="primary" disabled={!invoicesReady || busy || formOpen} onClick={() => window.print()}>طباعة الفواتير</button></div>
+          {!invoicesReady ? <div className="empty"><h3>الفواتير النهائية بعد الاعتماد فقط</h3><p>أكمل كل السجلات واعتمد الشهر. هيك ما بتنطبع فاتورة ناقصة أو بأرقام مؤقتة.</p></div> : <div className="invoice-grid">{currentRecords.flatMap(record => {
+            const cards = [];
+            if (invoiceFilter === "all" || invoiceFilter === "rent") cards.push(<RentInvoice key={`rent-${record.id}`} month={month} record={record} paid={paidFor(record.id, "rent")} />);
+            if (invoiceFilter === "all" || invoiceFilter === "electricity") cards.push(<ElectricityInvoice key={`electricity-${record.id}`} month={month} record={record} paid={paidFor(record.id, "electricity")} />);
+            return cards;
+          })}</div>}
+        </section>}
+
+        {page === "payments" && <><section className="panel"><div className="panel-head"><div><h2>أرصدة الفواتير</h2><p>الدفعات الجزئية مسموحة، بس النظام ما بيسمح يتجاوز المقبوض قيمة الفاتورة.</p></div></div>{!invoicesReady ? <div className="empty">التحصيل بيفتح بعد اعتماد الشهر.</div> : <div className="table-wrap"><table><thead><tr><th>القسم</th><th>الفاتورة</th><th>المستحق</th><th>المدفوع</th><th>المتبقي</th><th>إجراء</th></tr></thead><tbody>{currentRecords.flatMap(record => (["rent", "electricity"] as const).map(kind => {
+          const due = recordCharges(record)[kind]; const paid = paidFor(record.id, kind); const balance = roundedMoney(due - paid);
+          return <tr key={`${record.id}-${kind}`}><td>{record.meterSection}<small>{record.occupant}</small></td><td>{kind === "rent" ? "الإيجار والخدمات" : "الكهرباء"}</td><td>{currency.format(due)}</td><td>{currency.format(paid)}</td><td>{currency.format(balance)}</td><td>{writer && balance > 0 && <button className="primary" disabled={disabled || data.bootstrap} onClick={() => setPaymentEdit({ recordId: record.id, kind, amount: balance.toFixed(2), paidAt: today(), note: "", requestId: crypto.randomUUID() })}>تسجيل دفعة</button>}</td></tr>;
+        }))}</tbody></table></div>}</section><section className="panel spaced"><div className="panel-head"><h2>الإيصالات ({monthPayments.length})</h2></div><div className="table-wrap"><table><thead><tr><th>الإيصال</th><th>القسم / النوع</th><th>المبلغ</th><th>المحصّل</th><th>الحالة</th><th>إجراء</th></tr></thead><tbody>{monthPayments.map(payment => {
+          const record = currentRecords.find(item => item.id === payment.recordId);
+          return <tr key={payment.id}><td><small className="receipt-id">{payment.id}</small></td><td>{record?.meterSection}<small>{payment.kind === "rent" ? "إيجار وخدمات" : "كهرباء"}</small></td><td>{currency.format(payment.amount)}<small>{payment.paidAt}</small></td><td>{payment.receivedBy}</td><td>{payment.voidedAt ? "معكوس" : "فعّال"}<small>{payment.voidReason}</small></td><td><button className="secondary" onClick={() => printReceipt(payment)}>طباعة</button>{owner && !payment.voidedAt && <button className="danger-button" disabled={disabled} onClick={() => setVoidEdit({ id: payment.id, reason: "" })}>عكس</button>}</td></tr>;
+        })}</tbody></table></div></section></>}
+
+        {page === "users" && owner && <section className="panel"><div className="panel-head"><div><h2>الحسابات والصلاحيات</h2><p>تغيير كلمة المرور أو الصلاحية بيلغي جلسات المستخدم القديمة.</p></div><button className="primary" disabled={disabled} onClick={() => setUserEdit({ username: "", name: "", role: data.bootstrap ? "owner" : "accountant", active: 1, password: "" })}>إضافة مستخدم</button></div><div className="table-wrap"><table><thead><tr><th>الاسم</th><th>المستخدم</th><th>الصلاحية</th><th>الحالة</th><th>إجراء</th></tr></thead><tbody>{data.users.map(user => <tr key={user.id}><td>{user.name}</td><td>{user.username}</td><td>{roleLabel(user.role)}</td><td>{user.active ? "فعّال" : "معطّل"}</td><td><button className="secondary" disabled={disabled} onClick={() => setUserEdit({ ...user, password: "" })}>تعديل</button></td></tr>)}</tbody></table></div></section>}
+
+        {page === "history" && owner && <section className="panel"><div className="panel-head"><div><h2>آخر 200 عملية</h2><p>مين عمل شو ومتى، بدون حذف السجل المحاسبي.</p></div></div><div className="table-wrap"><table><thead><tr><th>التاريخ</th><th>المستخدم</th><th>العملية</th><th>التفاصيل</th></tr></thead><tbody>{data.audit.map(entry => <tr key={entry.id}><td>{new Date(entry.createdAt).toLocaleString("ar-LB")}</td><td>{entry.actorName}</td><td>{entry.action}</td><td>{entry.detail}</td></tr>)}</tbody></table></div></section>}
       </section>
-      {toast && <div className={`toast ${toast.tone}`} role={toast.tone === "error" ? "alert" : "status"} aria-live="polite">{toast.tone === "error" ? "!" : "✓"} {toast.message}</div>}
+
+      {departmentEdit && <Modal title={departmentEdit.id ? "تعديل القسم" : "إضافة قسم"} busy={busy} onClose={() => setDepartmentEdit(null)}><form onSubmit={saveDepartment}><div className="form-grid">
+        <Field label="عداد / قسم" value={departmentEdit.draft.meterSection} onChange={value => setDepartmentEdit({ ...departmentEdit, draft: { ...departmentEdit.draft, meterSection: value } })} required />
+        <Field label="نوعية القسم" value={departmentEdit.draft.category} onChange={value => setDepartmentEdit({ ...departmentEdit, draft: { ...departmentEdit.draft, category: value } })} required />
+        <Field label="صاحب القسم" value={departmentEdit.draft.owner} onChange={value => setDepartmentEdit({ ...departmentEdit, draft: { ...departmentEdit.draft, owner: value } })} />
+        <Field label="رقم التلفون" value={departmentEdit.draft.phone} onChange={value => setDepartmentEdit({ ...departmentEdit, draft: { ...departmentEdit.draft, phone: value } })} />
+        <Field label="مستخدم القسم" value={departmentEdit.draft.occupant} onChange={value => setDepartmentEdit({ ...departmentEdit, draft: { ...departmentEdit.draft, occupant: value } })} required />
+        <Field label="رقم المستخدم" value={departmentEdit.draft.occupantNumber} onChange={value => setDepartmentEdit({ ...departmentEdit, draft: { ...departmentEdit.draft, occupantNumber: value } })} />
+        <Field label="تاريخ بدء الإيجار" type="date" value={departmentEdit.draft.rentStart} onChange={value => setDepartmentEdit({ ...departmentEdit, draft: { ...departmentEdit.draft, rentStart: value } })} />
+        <Field label="تاريخ انتهاء الإيجار" type="date" value={departmentEdit.draft.rentEnd} onChange={value => setDepartmentEdit({ ...departmentEdit, draft: { ...departmentEdit.draft, rentEnd: value } })} />
+      </div><label className="check-field"><input type="checkbox" checked={departmentEdit.draft.active === 1} onChange={event => setDepartmentEdit({ ...departmentEdit, draft: { ...departmentEdit.draft, active: event.target.checked ? 1 : 0 } })} />قسم فعّال</label><SaveButton busy={busy} /></form></Modal>}
+
+      {recordEdit && <Modal title={`${recordEdit.record.meterSection} — ${monthLabel(recordEdit.record.month)}`} busy={busy} onClose={() => setRecordEdit(null)}><form onSubmit={saveRecord}><p>الحفظ بيأكد اكتمال السجل. القراءة السابقة بتتحدد من الشهر السابق على السيرفر.</p><div className="form-grid">
+        <NumberField label="رسم العداد ($)" value={recordEdit.draft.meterFee} onChange={value => setRecordEdit({ ...recordEdit, draft: { ...recordEdit.draft, meterFee: value } })} />
+        <NumberField label="سعر الكيلو ($)" value={recordEdit.draft.kiloPrice} step="0.0001" onChange={value => setRecordEdit({ ...recordEdit, draft: { ...recordEdit.draft, kiloPrice: value } })} />
+        <NumberField label="قيمة الإيجار ($)" value={recordEdit.draft.rent} onChange={value => setRecordEdit({ ...recordEdit, draft: { ...recordEdit.draft, rent: value } })} />
+        <NumberField label="قيمة الخدمات ($)" value={recordEdit.draft.services} onChange={value => setRecordEdit({ ...recordEdit, draft: { ...recordEdit.draft, services: value } })} />
+        <NumberField label="العداد السابق" value={recordEdit.draft.previousReading} disabled={data.records.some(item => item.departmentId === recordEdit.record.departmentId && item.month < recordEdit.record.month)} onChange={value => setRecordEdit({ ...recordEdit, draft: { ...recordEdit.draft, previousReading: value } })} />
+        <NumberField label="العداد الحالي" value={recordEdit.draft.currentReading} onChange={value => setRecordEdit({ ...recordEdit, draft: { ...recordEdit.draft, currentReading: value } })} />
+      </div><SaveButton busy={busy} /></form></Modal>}
+
+      {paymentEdit && <Modal title="تسجيل دفعة" busy={busy} onClose={() => setPaymentEdit(null)}><form onSubmit={savePayment}><Field label="المبلغ بالدولار" type="number" value={paymentEdit.amount} onChange={value => setPaymentEdit({ ...paymentEdit, amount: value })} required min="0.01" step="0.01" /><Field label="تاريخ الدفع" type="date" value={paymentEdit.paidAt} onChange={value => setPaymentEdit({ ...paymentEdit, paidAt: value })} required /><Field label="ملاحظة" value={paymentEdit.note} onChange={value => setPaymentEdit({ ...paymentEdit, note: value })} /><p>حتى لو انقطع الاتصال وأعدت نفس الطلب، معرّف الدفعة بيمنع تسجيلها مرتين.</p><SaveButton busy={busy} /></form></Modal>}
+
+      {voidEdit && <Modal title="عكس إيصال" busy={busy} onClose={() => setVoidEdit(null)}><form onSubmit={event => { event.preventDefault(); void run(async () => { const result = await action({ action: "voidPayment", id: voidEdit.id, reason: voidEdit.reason }); setVoidEdit(null); notify(String(result.message ?? "تم العكس")); }); }}><p>الإيصال ما بينحذف. بيضل بالأرشيف مع سبب العكس واسم المستخدم.</p><Field label="سبب العكس" value={voidEdit.reason} onChange={value => setVoidEdit({ ...voidEdit, reason: value })} required /><SaveButton busy={busy} /></form></Modal>}
+
+      {userEdit && <Modal title={userEdit.id ? "تعديل المستخدم" : "إضافة مستخدم"} busy={busy} onClose={() => setUserEdit(null)}><form onSubmit={saveUser}><Field label="الاسم" value={userEdit.name} onChange={value => setUserEdit({ ...userEdit, name: value })} required /><Field label="اسم المستخدم" value={userEdit.username} onChange={value => setUserEdit({ ...userEdit, username: value })} required /><Field label={userEdit.id ? "كلمة مرور جديدة — اتركها فارغة للإبقاء على الحالية" : "كلمة المرور — 12 حرف على الأقل"} type="password" value={userEdit.password} onChange={value => setUserEdit({ ...userEdit, password: value })} required={!userEdit.id} autoComplete="new-password" /><label className="field"><span>الصلاحية</span><select value={userEdit.role} disabled={data.bootstrap} onChange={event => setUserEdit({ ...userEdit, role: event.target.value as Role })}><option value="owner">المالك</option><option value="accountant">المحاسب</option><option value="viewer">عرض فقط</option></select></label><label className="check-field"><input type="checkbox" checked={userEdit.active === 1} disabled={data.bootstrap} onChange={event => setUserEdit({ ...userEdit, active: event.target.checked ? 1 : 0 })} />حساب فعّال</label><SaveButton busy={busy} /></form></Modal>}
+
+      {receipt && <div className="receipt-print"><Receipt payment={receipt} record={data.records.find(record => record.id === receipt.recordId)!} /></div>}
+      {toast && <ToastView toast={toast} />}
     </main>
   );
 }
 
-function previousMonth(value: string, amount: number) { const [year, month] = value.split("-").map(Number); const date = new Date(year, month - 1 - amount, 1); return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`; }
-function fieldLabel(field: keyof MonthlyRecord) { return ({ meterFee: "رسم العداد", kiloPrice: "سعر الكيلو", rent: "قيمة الإيجار", services: "قيمة الخدمات", previousReading: "العداد السابق", currentReading: "العداد الحالي" } as Partial<Record<keyof MonthlyRecord, string>>)[field] ?? field; }
-function Stat({ label, value, accent, featured = false }: { label: string; value: number; accent: string; featured?: boolean }) { return <div className={`stat ${featured ? "featured" : ""}`}><div><p>{label}</p><strong><small>$</small>{money.format(value)}</strong><span className={accent}>●</span></div><small>{featured ? "المبلغ المطلوب تحصيله" : "لهذه الفترة"}</small></div>; }
-function Field({ label, value, onChange, type = "text", required = false }: { label: string; value: string; onChange: (value: string) => void; type?: string; required?: boolean }) { return <label className="field"><span>{label}</span><input type={type} value={value} onChange={e => onChange(e.target.value)} required={required} /></label>; }
+function Field({ label, value, onChange, type = "text", required = false, ...rest }: { label: string; value: string; onChange: (value: string) => void; type?: string; required?: boolean; min?: string; step?: string; autoComplete?: string }) {
+  return <label className="field"><span>{label}</span><input type={type} value={value} onChange={event => onChange(event.target.value)} required={required} {...rest} /></label>;
+}
+function NumberField({ label, value, onChange, step = "0.01", disabled = false }: { label: string; value: number; onChange: (value: number) => void; step?: string; disabled?: boolean }) {
+  return <label className="field"><span>{label}</span><input type="number" min="0" step={step} value={value} disabled={disabled} onChange={event => onChange(Number(event.target.value))} required /></label>;
+}
+function SaveButton({ busy }: { busy: boolean }) { return <button className="primary form-save" disabled={busy}>{busy ? "جاري الحفظ…" : "حفظ وتأكيد"}</button>; }
+function Stat({ label, value }: { label: string; value: number }) { return <div className="stat"><p>{label}</p><strong>{currency.format(value)}</strong></div>; }
+function ToastView({ toast }: { toast: NonNullable<Toast> }) { return <div className={`toast ${toast.tone}`} role={toast.tone === "error" ? "alert" : "status"}>{toast.tone === "error" ? "!" : "✓"} {toast.message}</div>; }
+function Modal({ title, busy, onClose, children }: { title: string; busy: boolean; onClose: () => void; children: React.ReactNode }) {
+  const ref = useRef<HTMLDialogElement>(null);
+  useEffect(() => { ref.current?.showModal(); }, []);
+  return <dialog ref={ref} className="edit-dialog" onCancel={event => { event.preventDefault(); if (!busy) onClose(); }}><header><h2>{title}</h2><button type="button" aria-label="إغلاق" disabled={busy} onClick={onClose}>×</button></header>{children}</dialog>;
+}
 
 function InvoiceHeader({ title, month }: { title: string; month: string }) {
   return <header className="invoice-card-head"><div><span>BY JMR MALL</span><strong>{title}</strong></div><time>{monthLabel(month)}</time></header>;
 }
-
-function InvoiceIdentity({ department }: { department: Department }) {
-  return <div className="invoice-identity"><div><span>عداد / قسم</span><strong>{department.meterSection}</strong></div><div><span>اسم المستثمر</span><strong>{department.occupant}</strong></div><div><span>رقم المستثمر</span><strong>{department.occupantNumber || "—"}</strong></div></div>;
+function InvoiceIdentity({ record }: { record: MonthlyRecord }) {
+  return <div className="invoice-identity"><div><span>عداد / قسم</span><strong>{record.meterSection}</strong></div><div><span>اسم المستثمر</span><strong>{record.occupant}</strong></div><div><span>رقم المستثمر</span><strong>{record.occupantNumber || "—"}</strong></div></div>;
 }
-
-function RentInvoice({ month, department, record }: { month: string; department: Department; record: MonthlyRecord }) {
+function RentInvoice({ month, record, paid }: { month: string; record: MonthlyRecord; paid: number }) {
   const total = record.rent + record.services;
-  return <article className="invoice-card rent-invoice"><InvoiceHeader title="فاتورة الإيجار" month={month} /><InvoiceIdentity department={department} /><div className="invoice-values two-values"><div><span>قيمة الإيجار</span><strong>${money.format(record.rent)}</strong></div><div><span>قيمة الخدمات</span><strong>${money.format(record.services)}</strong></div></div><footer className="invoice-total"><span>المجموع</span><strong>${money.format(total)}</strong></footer></article>;
+  return <article className="invoice-card rent-invoice"><InvoiceHeader title="فاتورة الإيجار" month={month} /><InvoiceIdentity record={record} /><div className="invoice-values two-values"><div><span>قيمة الإيجار</span><strong>{currency.format(record.rent)}</strong></div><div><span>قيمة الخدمات</span><strong>{currency.format(record.services)}</strong></div></div><footer className="invoice-total"><span>المجموع</span><strong>{currency.format(total)}</strong></footer><p>المدفوع: {currency.format(paid)} · المتبقي: <strong>{currency.format(roundedMoney(total - paid))}</strong></p></article>;
 }
-
-function ElectricityInvoice({ month, department, record }: { month: string; department: Department; record: MonthlyRecord }) {
+function ElectricityInvoice({ month, record, paid }: { month: string; record: MonthlyRecord; paid: number }) {
   const usage = record.currentReading - record.previousReading;
   const subscription = usage * record.kiloPrice + record.meterFee;
-  return <article className="invoice-card electricity-invoice"><InvoiceHeader title="فاتورة الكهرباء" month={month} /><InvoiceIdentity department={department} /><div className="invoice-values electricity-values"><div><span>العداد السابق</span><strong>{record.previousReading}</strong></div><div><span>العداد الحالي</span><strong>{record.currentReading}</strong></div><div><span>صرف العداد</span><strong>{usage}</strong></div><div><span>سعر الكيلو</span><strong>${money.format(record.kiloPrice)}</strong></div><div><span>رسم العداد</span><strong>${money.format(record.meterFee)}</strong></div></div><footer className="invoice-total"><span>قيمة الاشتراك</span><strong>${money.format(subscription)}</strong></footer></article>;
+  const difference = record.currentReading - record.previousReading;
+  const total = subscription + record.services + record.rent;
+  void difference; void total;
+  return <article className="invoice-card electricity-invoice"><InvoiceHeader title="فاتورة الكهرباء" month={month} /><InvoiceIdentity record={record} /><div className="invoice-values electricity-values"><div><span>العداد السابق</span><strong>{record.previousReading}</strong></div><div><span>العداد الحالي</span><strong>{record.currentReading}</strong></div><div><span>صرف العداد</span><strong>{usage}</strong></div><div><span>سعر الكيلو</span><strong>{currency.format(record.kiloPrice)}</strong></div><div><span>رسم العداد</span><strong>{currency.format(record.meterFee)}</strong></div></div><footer className="invoice-total"><span>قيمة الاشتراك</span><strong>{currency.format(roundedMoney(subscription))}</strong></footer><p>المدفوع: {currency.format(paid)} · المتبقي: <strong>{currency.format(roundedMoney(subscription - paid))}</strong></p></article>;
+}
+function Receipt({ payment, record }: { payment: Payment; record: MonthlyRecord }) {
+  return <article className="invoice-card receipt-card"><InvoiceHeader title="إيصال قبض" month={record.month} /><p className="receipt-id">رقم الإيصال: {payment.id}</p><InvoiceIdentity record={record} /><p>نوع الفاتورة: {payment.kind === "rent" ? "الإيجار والخدمات" : "الكهرباء"}</p><footer className="invoice-total"><span>المبلغ المقبوض</span><strong>{currency.format(payment.amount)}</strong></footer><p>التاريخ: {payment.paidAt} · المحصّل: {payment.receivedBy}</p>{payment.note && <p>{payment.note}</p>}{payment.voidedAt && <p className="error-text">إيصال معكوس — {payment.voidReason} — بواسطة {payment.voidedBy}</p>}</article>;
 }
