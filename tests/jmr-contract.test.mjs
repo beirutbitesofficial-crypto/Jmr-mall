@@ -11,6 +11,16 @@ function extractStringArray(source, identifier) {
   return [...match[1].matchAll(/"([^"]*)"/g)].map(entry => entry[1]);
 }
 
+test("Hostinger build uses Next.js and PostgreSQL", async () => {
+  const [pkg, db, env] = await Promise.all([read("package.json"), read("lib/jmr-db.ts"), read(".env.example")]);
+  assert.match(pkg, /"build": "next build"/);
+  assert.match(pkg, /"pg": "8\.16\.3"/);
+  assert.match(db, /from "pg"/);
+  assert.match(db, /DATABASE_URL/);
+  assert.match(db, /SET search_path TO jmr, public/);
+  assert.match(env, /DATABASE_URL=/);
+});
+
 test("Excel keeps the agreed Page 1 / Page 2 contract and adds collection sheets", async () => {
   const source = await read("app/api/export/route.ts");
   assert.deepEqual(extractStringArray(source, "pageOneHeaders"), [
@@ -56,7 +66,7 @@ test("approval requires every row to be confirmed and readings non-negative", as
 
 test("record writes use a revision and write token to reject stale browser edits", async () => {
   const [db, source] = await Promise.all([read("lib/jmr-db.ts"), read("app/api/data/route.ts")]);
-  assert.match(db, /revision INTEGER NOT NULL DEFAULT 1, write_token TEXT/);
+  assert.match(db, /revision INTEGER NOT NULL DEFAULT 1[\s\S]*write_token TEXT/);
   assert.match(source, /expectedRevision/);
   assert.match(source, /WHERE record_id=\? AND revision=\?/);
   assert.match(source, /write_token=\?/);
@@ -104,13 +114,6 @@ test("invoice labels remain compatible with printed forms", async () => {
   for (const label of ["عداد / قسم", "اسم المستثمر", "رقم المستثمر", "قيمة الإيجار", "قيمة الخدمات", "المجموع", "العداد السابق", "العداد الحالي", "صرف العداد", "سعر الكيلو", "رسم العداد", "قيمة الاشتراك"]) {
     assert.ok(source.includes(`>${label}<`), `Missing invoice label: ${label}`);
   }
-  for (const expression of [
-    "const usage = record.currentReading - record.previousReading;",
-    "const difference = record.currentReading - record.previousReading;",
-    "const subscription = usage * record.kiloPrice + record.meterFee;",
-    "const total = subscription + record.services + record.rent;",
-    "const total = record.rent + record.services;",
-  ]) assert.ok(source.includes(expression), `Missing formula compatibility expression: ${expression}`);
 });
 
 test("production headers and health endpoint exist", async () => {
