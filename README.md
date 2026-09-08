@@ -1,100 +1,115 @@
-# vinext-starter
+# BY JMR Mall — Audit & Collection System
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+Production-oriented mall accounting app for monthly meter readings, rent/services invoices, collections, receipts, users, permissions, and audit history.
 
-## Prerequisites
+## Runtime
 
-- Node.js `>=22.13.0`
+- Node.js: `>=22.13.0`
+- App: Next.js 16 + Vinext
+- Production runtime: Cloudflare Workers
+- Database: Cloudflare D1, bound as **`DB`**
+- Build command: `npm run build`
+- Install command: `npm ci --include=dev`
 
-## Quick Start
+This repository intentionally uses Cloudflare D1 APIs. A plain Hostinger Node deployment is **not** a drop-in target; moving to Hostinger requires a PostgreSQL storage adapter/migration instead of changing environment variables only.
+
+## Production guarantees added in v2
+
+- A new month can only be created after the previous month is approved.
+- Once a later month exists, older months are immutable accounting history.
+- Current readings start from the previous approved reading but remain **unconfirmed** until reviewed and saved.
+- Approval, invoice export, printing, and collection require complete records.
+- Each month stores a tenant/department snapshot so later contract edits do not rewrite historical invoices.
+- Record revisions reject stale edits from another browser/session.
+- Partial payments are supported and database-side checks prevent overpayment.
+- Payment request IDs make retries idempotent and prevent duplicate receipts.
+- Receipts are reversed with a reason instead of deleted.
+- Owner / accountant / viewer permissions are enforced server-side.
+- Password or permission changes invalidate old sessions.
+- The last 200 audit events are visible to owners; the full log stays in D1.
+- `/api/health` checks application/database readiness.
+- `/api/backup` lets an owner download a business-data backup (passwords and sessions are deliberately excluded).
+
+## First deployment
+
+### 1. D1 binding
+
+Create or attach a D1 database and bind it with the exact name:
+
+```text
+DB
+```
+
+The app creates its required tables and migrates the existing `departments` / `monthly_records` data on first request. Existing historical rows are preserved. Previously locked rows are marked confirmed; existing unlocked rows intentionally require review before approval.
+
+### 2. Runtime secrets / variables
+
+Set these in the **runtime environment** (not in source control):
+
+```text
+JMR_ADMIN_USERNAME=admin
+JMR_ADMIN_PASSWORD=<strong initial setup password>
+JMR_SESSION_SECRET=<random secret at least 32 characters>
+APP_ORIGIN=https://your-real-domain.example
+```
+
+`JMR_ADMIN_USERNAME` + `JMR_ADMIN_PASSWORD` are used only while there are no application users. After the first owner account is created, normal database users take over.
+
+For backwards compatibility only, `JMR_APP_PIN` can act as the initial password when `JMR_ADMIN_PASSWORD` is absent. Prefer the stronger admin password variable.
+
+Generate a session secret with a password manager or a cryptographically secure random generator. Rotating `JMR_SESSION_SECRET` invalidates existing login cookies/sessions.
+
+### 3. Build settings
+
+```text
+Branch: main (after the production PR is merged)
+Root directory: .
+Node version: 22.13.0 or newer
+Install command: npm ci --include=dev
+Build command: npm run build
+Output: Vinext / Cloudflare Worker build (`dist`)
+```
+
+Do not configure `DATABASE_URL`, Prisma, MySQL, or PostgreSQL for this D1 build.
+
+### 4. Pre-launch checks
 
 ```bash
-npm install
-npm run dev
+npm test
+npm run lint
 npm run build
 ```
 
-This starter does not use `wrangler.jsonc`.
+After deployment, request:
 
-## Included Shape
-
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
-
-## Workspace Auth Headers
-
-Signed-in visitors receive both `oai-authenticated-user-id` and `oai-authenticated-user-email`. Private Sites require every visitor to sign in; public Sites may also have anonymous visitors, for whom neither header is present.
-
-The user ID is stable for the same user on the same Site and different across Sites. Email and name are intended for display or contact purposes.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const userId = requestHeaders.get("oai-authenticated-user-id");
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
+```text
+GET /api/health
 ```
 
-## Optional Dispatch-Owned ChatGPT Sign-In
+Expected response:
 
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
+```json
+{"ok":true}
+```
 
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
+Then sign in with the initial setup account, immediately create the permanent owner account, and sign back in with that account.
 
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
+## Roles
 
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
+- **Owner:** all operations, month approval/reopen, user management, receipt reversal, audit and backup access.
+- **Accountant:** departments, meter/fee entry, and collections.
+- **Viewer:** read, invoice view/print, and exports only.
 
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
+## Monthly workflow
 
-## Useful Commands
+1. Update/archive department contracts as needed.
+2. Create the next month only after the prior month is approved.
+3. Review every department's readings and fees, then save each row.
+4. Owner approves the month.
+5. Print/export invoices.
+6. Record full or partial payments and issue receipts.
+7. If a receipt is wrong, the owner reverses it with a reason; it is never deleted.
 
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
-- `npm run db:generate`: generate Drizzle migrations after schema changes
+## Backup policy
 
-## Learn More
-
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+`/api/backup` is a convenient business-data export, not a replacement for infrastructure backups. Enable scheduled D1 backups/exports as part of production operations. Never store backup files publicly because they contain tenant, phone, contract, invoice, and payment data.
