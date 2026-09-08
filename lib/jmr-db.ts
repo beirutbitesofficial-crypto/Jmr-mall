@@ -45,7 +45,6 @@ const schema = [
     occupant TEXT NOT NULL DEFAULT '', occupant_number TEXT NOT NULL DEFAULT '', rent_start TEXT NOT NULL DEFAULT '',
     rent_end TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS idx_departments_meter_section_nocase ON departments(lower(trim(meter_section)))`,
   `CREATE TABLE IF NOT EXISTS monthly_records (
     id INTEGER PRIMARY KEY AUTOINCREMENT, month TEXT NOT NULL, department_id INTEGER NOT NULL,
     meter_fee REAL NOT NULL DEFAULT 0, kilo_price REAL NOT NULL DEFAULT 0, rent REAL NOT NULL DEFAULT 0,
@@ -77,8 +76,7 @@ const schema = [
   )`,
   `CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY NOT NULL, user_id TEXT NOT NULL, session_version INTEGER NOT NULL,
-    expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at)`,
   `CREATE TABLE IF NOT EXISTS payments (
