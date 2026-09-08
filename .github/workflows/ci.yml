@@ -2,7 +2,7 @@ name: JMR CI
 
 on:
   push:
-    branches: [main, "fix/**"]
+    branches: [main, "fix/**", "hostinger-**"]
   pull_request:
     branches: [main]
 
@@ -18,8 +18,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22.13.0"
-          cache: npm
-      - run: npm ci
+      - run: npm install
       - run: npm test
       - run: npm run lint
       - run: npm run build
