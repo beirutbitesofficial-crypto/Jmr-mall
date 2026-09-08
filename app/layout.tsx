@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
 import "./globals.css";
+import "./strong.css";
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();
@@ -9,7 +10,7 @@ export async function generateMetadata(): Promise<Metadata> {
   const image = `${protocol}://${host}/og.png`;
   return {
     title: "By JMR Mall — Audit System",
-    description: "نظام إدارة الأقسام والتدقيق الشهري للعدادات والإيجارات والخدمات",
+    description: "نظام إدارة الأقسام والتدقيق الشهري والتحصيل والصلاحيات لـ JMR Mall",
     icons: { icon: "/favicon.svg" },
     openGraph: { title: "By JMR Mall", description: "Mall Audit System", images: [{ url: image, width: 1000, height: 667 }] },
     twitter: { card: "summary_large_image", title: "By JMR Mall", description: "Mall Audit System", images: [image] },
