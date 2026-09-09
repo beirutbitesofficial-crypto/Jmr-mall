@@ -117,7 +117,8 @@ test("invoice labels remain compatible with printed forms", async () => {
 });
 
 test("production headers and health endpoint exist", async () => {
-  const [config, health] = await Promise.all([read("next.config.ts"), read("app/api/health/route.ts")]);
+  const [config, health] = await Promise.all([read("next.config.mjs"), read("app/api/health/route.ts")]);
+  assert.match(config, /useWasmBinary:\s*true/);
   assert.match(config, /X-Frame-Options/);
   assert.match(config, /X-Content-Type-Options/);
   assert.match(config, /Strict-Transport-Security/);
