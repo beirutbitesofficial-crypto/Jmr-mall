@@ -102,11 +102,19 @@ export async function readJsonObject(request: Request, maximum = 32_000): Promis
 }
 
 function clientAddress(request: Request): string {
-  return request.headers.get("cf-connecting-ip")?.trim() || request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+  return request.headers.get("cf-connecting-ip")?.trim()
+    || request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
+    || request.headers.get("x-real-ip")?.trim()
+    || "unknown";
 }
 
 async function rateKey(scope: string, value: string): Promise<string> {
   return digest(`${scope}:${value}:${sessionSecret()}`);
+}
+
+async function sessionFingerprint(request: Request): Promise<string> {
+  const ua = (request.headers.get("user-agent") ?? "unknown").slice(0, 300);
+  return rateKey("session-fingerprint", `${clientAddress(request)}|${ua}`);
 }
 
 async function consumeFailure(key: string, maximum: number): Promise<void> {
@@ -139,6 +147,7 @@ async function clearFailures(...keys: string[]): Promise<void> {
 }
 
 type UserRow = { id: string; username: string; name: string; role: Role; active: number; passwordHash: string; sessionVersion: number };
+type SessionRow = { userId: string; sessionVersion: number; expiresAt: number };
 
 export async function login(request: Request, username: string, password: string): Promise<{ actor: Actor; token: string; setCookie: string; expiresAt: string }> {
   sameOrigin(request);
@@ -167,19 +176,31 @@ export async function login(request: Request, username: string, password: string
   await clearFailures(accountKey, clientKey);
   const token = hex(crypto.getRandomValues(new Uint8Array(32)));
   const sessionId = await digest(`${token}:${sessionSecret()}`);
+  const fingerprint = await sessionFingerprint(request);
   const expires = Date.now() + SESSION_MS;
-  await getDb().prepare(`INSERT INTO sessions (id, user_id, session_version, expires_at, created_at) VALUES (?, ?, ?, ?, ?)`)
-    .bind(sessionId, actor.id, actor.sessionVersion, expires, Date.now()).run();
+  await getDb().prepare(`INSERT INTO sessions (id, user_id, session_version, expires_at, created_at, client_fingerprint) VALUES (?, ?, ?, ?, ?, ?)`)
+    .bind(sessionId, actor.id, actor.sessionVersion, expires, Date.now(), fingerprint).run();
   return { actor, token, setCookie: cookie(token, SESSION_COOKIE_MAX_AGE_SECONDS), expiresAt: new Date(expires).toISOString() };
+}
+
+async function resolveStoredSession(request: Request): Promise<SessionRow | null> {
+  const token = parseCookie(request);
+  if (token && /^[a-f0-9]{64}$/.test(token)) {
+    const id = await digest(`${token}:${sessionSecret()}`);
+    const stored = await getDb().prepare(`SELECT user_id AS userId, session_version AS sessionVersion, expires_at AS expiresAt
+      FROM sessions WHERE id = ? LIMIT 1`).bind(id).first<SessionRow>();
+    if (stored && Number(stored.expiresAt) > Date.now()) return stored;
+  }
+
+  const fingerprint = await sessionFingerprint(request);
+  return getDb().prepare(`SELECT user_id AS userId, session_version AS sessionVersion, expires_at AS expiresAt
+    FROM sessions WHERE client_fingerprint = ? AND expires_at > ?
+    ORDER BY created_at DESC LIMIT 1`).bind(fingerprint, Date.now()).first<SessionRow>();
 }
 
 export async function readSession(request: Request): Promise<Actor | null> {
   await initDatabase();
-  const token = parseCookie(request);
-  if (!token || !/^[a-f0-9]{64}$/.test(token)) return null;
-  const id = await digest(`${token}:${sessionSecret()}`);
-  const stored = await getDb().prepare(`SELECT user_id AS userId, session_version AS sessionVersion, expires_at AS expiresAt FROM sessions WHERE id = ? LIMIT 1`)
-    .bind(id).first<{ userId: string; sessionVersion: number; expiresAt: number }>();
+  const stored = await resolveStoredSession(request);
   if (!stored || Number(stored.expiresAt) <= Date.now()) return null;
   if (stored.userId === "bootstrap") {
     if (await usersCount() === 0) return { id: "bootstrap", name: "إعداد المالك", role: "owner", sessionVersion: 0 };
@@ -204,6 +225,8 @@ export async function logout(request: Request): Promise<string> {
     const id = await digest(`${token}:${sessionSecret()}`);
     await getDb().prepare("DELETE FROM sessions WHERE id = ?").bind(id).run();
   }
+  const fingerprint = await sessionFingerprint(request);
+  await getDb().prepare("DELETE FROM sessions WHERE client_fingerprint = ?").bind(fingerprint).run();
   return cookie("", 0);
 }
 
