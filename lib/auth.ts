@@ -12,9 +12,11 @@ function hex(bytes: Uint8Array): string {
   return Array.from(bytes, value => value.toString(16).padStart(2, "0")).join("");
 }
 
-function fromHex(value: string): Uint8Array {
+function fromHex(value: string): Uint8Array<ArrayBuffer> {
   const matches = value.match(/.{2}/g) ?? [];
-  return Uint8Array.from(matches, pair => Number.parseInt(pair, 16));
+  const bytes = new Uint8Array(new ArrayBuffer(matches.length));
+  matches.forEach((pair, index) => { bytes[index] = Number.parseInt(pair, 16); });
+  return bytes;
 }
 
 export async function digest(value: string): Promise<string> {
@@ -63,14 +65,7 @@ function parseCookie(request: Request): string | null {
 }
 
 function cookie(token: string, maxAgeSeconds: number): string {
-  return [
-    `${COOKIE}=${token}`,
-    "Path=/",
-    "HttpOnly",
-    "Secure",
-    "SameSite=Strict",
-    `Max-Age=${maxAgeSeconds}`,
-  ].join("; ");
+  return [`${COOKIE}=${token}`, "Path=/", "HttpOnly", "Secure", "SameSite=Strict", `Max-Age=${maxAgeSeconds}`].join("; ");
 }
 
 export function jsonNoStore(body: unknown, init: ResponseInit = {}): Response {
@@ -105,7 +100,7 @@ export async function readJsonObject(request: Request, maximum = 32_000): Promis
 }
 
 function clientAddress(request: Request): string {
-  return request.headers.get("cf-connecting-ip")?.trim() || "unknown";
+  return request.headers.get("cf-connecting-ip")?.trim() || request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
 }
 
 async function rateKey(scope: string, value: string): Promise<string> {
@@ -141,55 +136,37 @@ async function clearFailures(...keys: string[]): Promise<void> {
   await db.batch(keys.map(key => db.prepare("DELETE FROM auth_login_rate_limits WHERE client_key = ?").bind(key)));
 }
 
-type UserRow = {
-  id: string;
-  username: string;
-  name: string;
-  role: Role;
-  active: number;
-  passwordHash: string;
-  sessionVersion: number;
-};
+type UserRow = { id: string; username: string; name: string; role: Role; active: number; passwordHash: string; sessionVersion: number };
 
 export async function login(request: Request, username: string, password: string): Promise<{ actor: Actor; setCookie: string; expiresAt: string }> {
   sameOrigin(request);
   await initDatabase();
   assertJmr(username.length >= 3 && username.length <= 64 && password.length > 0 && password.length <= 128, "بيانات الدخول غير صحيحة", 401);
-
   const normalized = username.trim().toLowerCase();
   const accountKey = await rateKey("account", normalized);
   const clientKey = await rateKey("client", clientAddress(request));
   assertJmr(!(await alreadyLimited(accountKey, MAX_ACCOUNT_FAILURES)) && !(await alreadyLimited(clientKey, MAX_CLIENT_FAILURES)), "محاولات كثيرة. انتظر 15 دقيقة", 429);
-
   const count = await usersCount();
   let actor: Actor | null = null;
   if (count === 0) {
     const expectedUser = (runtimeEnv().JMR_ADMIN_USERNAME ?? "admin").trim().toLowerCase();
     const expectedPassword = runtimeEnv().JMR_ADMIN_PASSWORD ?? runtimeEnv().JMR_APP_PIN;
     assertJmr(typeof expectedPassword === "string" && expectedPassword.length >= 4, "أضف JMR_ADMIN_PASSWORD لإعداد الحساب الأول", 503);
-    if (normalized === expectedUser && await equalSecrets(password, expectedPassword)) {
-      actor = { id: "bootstrap", name: "إعداد المالك", role: "owner", sessionVersion: 0 };
-    }
+    if (normalized === expectedUser && await equalSecrets(password, expectedPassword)) actor = { id: "bootstrap", name: "إعداد المالك", role: "owner", sessionVersion: 0 };
   } else {
     const user = await getDb().prepare(`SELECT id, username, name, role, active, password_hash AS passwordHash,
-      session_version AS sessionVersion FROM users WHERE username = ? COLLATE NOCASE LIMIT 1`)
-      .bind(normalized).first<UserRow>();
-    if (user && Number(user.active) === 1 && await verifyPassword(password, user.passwordHash)) {
-      actor = { id: user.id, name: user.name, role: user.role, sessionVersion: Number(user.sessionVersion) };
-    }
+      session_version AS sessionVersion FROM users WHERE username = ? COLLATE NOCASE LIMIT 1`).bind(normalized).first<UserRow>();
+    if (user && Number(user.active) === 1 && await verifyPassword(password, user.passwordHash)) actor = { id: user.id, name: user.name, role: user.role, sessionVersion: Number(user.sessionVersion) };
   }
-
   if (!actor) {
     await Promise.all([consumeFailure(accountKey, MAX_ACCOUNT_FAILURES), consumeFailure(clientKey, MAX_CLIENT_FAILURES)]);
     throw new JmrError("اسم المستخدم أو كلمة المرور غير صحيحة", 401);
   }
-
   await clearFailures(accountKey, clientKey);
   const token = hex(crypto.getRandomValues(new Uint8Array(32)));
   const sessionId = await digest(`${token}:${sessionSecret()}`);
   const expires = Date.now() + SESSION_MS;
-  await getDb().prepare(`INSERT INTO sessions (id, user_id, session_version, expires_at, created_at)
-    VALUES (?, ?, ?, ?, ?)`)
+  await getDb().prepare(`INSERT INTO sessions (id, user_id, session_version, expires_at, created_at) VALUES (?, ?, ?, ?, ?)`)
     .bind(sessionId, actor.id, actor.sessionVersion, expires, Date.now()).run();
   return { actor, setCookie: cookie(token, SESSION_MS / 1000), expiresAt: new Date(expires).toISOString() };
 }
@@ -199,17 +176,15 @@ export async function readSession(request: Request): Promise<Actor | null> {
   const token = parseCookie(request);
   if (!token || !/^[a-f0-9]{64}$/.test(token)) return null;
   const id = await digest(`${token}:${sessionSecret()}`);
-  const stored = await getDb().prepare(`SELECT user_id AS userId, session_version AS sessionVersion, expires_at AS expiresAt
-    FROM sessions WHERE id = ? LIMIT 1`).bind(id).first<{ userId: string; sessionVersion: number; expiresAt: number }>();
+  const stored = await getDb().prepare(`SELECT user_id AS userId, session_version AS sessionVersion, expires_at AS expiresAt FROM sessions WHERE id = ? LIMIT 1`)
+    .bind(id).first<{ userId: string; sessionVersion: number; expiresAt: number }>();
   if (!stored || Number(stored.expiresAt) <= Date.now()) return null;
-
   if (stored.userId === "bootstrap") {
     if (await usersCount() === 0) return { id: "bootstrap", name: "إعداد المالك", role: "owner", sessionVersion: 0 };
     return null;
   }
-
-  const user = await getDb().prepare(`SELECT id, name, role, active, session_version AS sessionVersion
-    FROM users WHERE id = ? LIMIT 1`).bind(stored.userId).first<{ id: string; name: string; role: Role; active: number; sessionVersion: number }>();
+  const user = await getDb().prepare(`SELECT id, name, role, active, session_version AS sessionVersion FROM users WHERE id = ? LIMIT 1`)
+    .bind(stored.userId).first<{ id: string; name: string; role: Role; active: number; sessionVersion: number }>();
   if (!user || Number(user.active) !== 1 || Number(user.sessionVersion) !== Number(stored.sessionVersion)) return null;
   return { id: user.id, name: user.name, role: user.role, sessionVersion: Number(user.sessionVersion) };
 }
