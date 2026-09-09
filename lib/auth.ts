@@ -1,7 +1,7 @@
 import { assertJmr, isObject, JmrError, type Actor, type Role } from "@/lib/jmr-core";
 import { getDb, initDatabase, runtimeEnv, usersCount } from "@/lib/jmr-db";
 
-const COOKIE = "__Host-jmr_session";
+const COOKIE = "jmr_session";
 const SESSION_MS = 12 * 60 * 60 * 1000;
 const RATE_WINDOW_MS = 15 * 60 * 1000;
 const MAX_ACCOUNT_FAILURES = 5;
@@ -65,7 +65,7 @@ function parseCookie(request: Request): string | null {
 }
 
 function cookie(token: string, maxAgeSeconds: number): string {
-  return [`${COOKIE}=${token}`, "Path=/", "HttpOnly", "Secure", "SameSite=Strict", `Max-Age=${maxAgeSeconds}`].join("; ");
+  return [`${COOKIE}=${token}`, "Path=/", "HttpOnly", "Secure", "SameSite=Lax", `Max-Age=${maxAgeSeconds}`].join("; ");
 }
 
 export function jsonNoStore(body: unknown, init: ResponseInit = {}): Response {
