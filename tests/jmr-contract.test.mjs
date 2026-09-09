@@ -17,7 +17,7 @@ test("Hostinger build uses Next.js and PostgreSQL", async () => {
   assert.match(pkg, /"pg": "8\.16\.3"/);
   assert.match(db, /from "pg"/);
   assert.match(db, /DATABASE_URL/);
-  assert.match(db, /SET search_path TO jmr, public/);
+  assert.match(db, /search_path=jmr,public/);
   assert.match(env, /DATABASE_URL=/);
 });
 
