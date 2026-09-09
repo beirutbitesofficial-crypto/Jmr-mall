@@ -13,7 +13,7 @@ function extractStringArray(source, identifier) {
 
 test("Hostinger build uses Next.js and PostgreSQL", async () => {
   const [pkg, db, env] = await Promise.all([read("package.json"), read("lib/jmr-db.ts"), read(".env.example")]);
-  assert.match(pkg, /"build": "next build"/);
+  assert.match(pkg, /"build": "next build --webpack"/);
   assert.match(pkg, /"pg": "8\.16\.3"/);
   assert.match(db, /from "pg"/);
   assert.match(db, /DATABASE_URL/);
