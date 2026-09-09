@@ -65,7 +65,7 @@ function parseCookie(request: Request): string | null {
 }
 
 function cookie(token: string, maxAgeSeconds: number): string {
-  return [`${COOKIE}=${token}`, "Path=/", "HttpOnly", "Secure", "SameSite=Lax", `Max-Age=${maxAgeSeconds}`].join("; ");
+  return [`${COOKIE}=${token}`, "Path=/", "HttpOnly", "Secure", "SameSite=Strict", `Max-Age=${maxAgeSeconds}`].join("; ");
 }
 
 export function jsonNoStore(body: unknown, init: ResponseInit = {}): Response {
