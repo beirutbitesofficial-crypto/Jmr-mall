@@ -40,9 +40,8 @@ test("Excel keeps the agreed Page 1 / Page 2 contract and adds collection sheets
 });
 
 test("historical tenant data is snapshotted and exports read the snapshot", async () => {
-  const [db, api, exportRoute] = await Promise.all([read("lib/jmr-db.ts"), read("app/api/data/route.ts"), read("app/api/export/route.ts")]);
-  assert.match(db, /CREATE TABLE IF NOT EXISTS monthly_snapshots/);
-  assert.match(db, /INSERT OR IGNORE INTO monthly_snapshots/);
+  const [api, exportRoute] = await Promise.all([read("app/api/data/route.ts"), read("app/api/export/route.ts")]);
+  assert.match(api, /INSERT OR IGNORE INTO monthly_snapshots/);
   assert.match(api, /JOIN monthly_snapshots s ON s\.record_id = r\.id/);
   assert.match(exportRoute, /JOIN monthly_snapshots s ON s\.record_id=r\.id/);
   assert.match(api, /الفواتير السابقة بقيت بنسختها المحفوظة/);
@@ -65,18 +64,19 @@ test("approval requires every row to be confirmed and readings non-negative", as
 });
 
 test("record writes use a revision and write token to reject stale browser edits", async () => {
-  const [db, source] = await Promise.all([read("lib/jmr-db.ts"), read("app/api/data/route.ts")]);
-  assert.match(db, /revision INTEGER NOT NULL DEFAULT 1[\s\S]*write_token TEXT/);
+  const source = await read("app/api/data/route.ts");
   assert.match(source, /expectedRevision/);
+  assert.match(source, /UPDATE record_meta SET revision=revision\+1, write_token=\?, confirmed=0/);
   assert.match(source, /WHERE record_id=\? AND revision=\?/);
   assert.match(source, /write_token=\?/);
   assert.match(source, /السجل تغيّر بجلسة تانية/);
 });
 
 test("payments are idempotent and database-side balance checks prevent overpayment", async () => {
-  const [db, source] = await Promise.all([read("lib/jmr-db.ts"), read("app/api/data/route.ts")]);
-  assert.match(db, /request_id TEXT NOT NULL UNIQUE/);
+  const source = await read("app/api/data/route.ts");
+  assert.match(source, /requestId/);
   assert.match(source, /priorRequest/);
+  assert.match(source, /FROM payments WHERE request_id=\? LIMIT 1/);
   assert.match(source, /INSERT OR IGNORE INTO payments/);
   assert.match(source, /WHERE \? <= \? - COALESCE\(\(SELECT SUM\(amount\)/);
   assert.match(source, /الرصيد تغيّر بجلسة تانية/);
