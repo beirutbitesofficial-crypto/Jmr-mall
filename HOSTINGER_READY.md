@@ -1,0 +1,1 @@
+Prepared for Hostinger Node.js + Supabase PostgreSQL. Merge only after CI passes and a valid DATABASE_URL is configured in Hostinger.
