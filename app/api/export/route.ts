@@ -112,7 +112,6 @@ export async function GET(request: Request) {
     XLSX.utils.book_append_sheet(workbook, pageTwo, `Page 2 ${month}`);
     XLSX.utils.book_append_sheet(workbook, balances, "الأرصدة");
     XLSX.utils.book_append_sheet(workbook, receipts, "الإيصالات");
-    workbook.CalcPr = { fullCalcOnLoad: "1", forceFullCalc: "1", calcMode: "auto" };
 
     const file = XLSX.write(workbook, { bookType: "xlsx", type: "array", cellDates: true });
     return new Response(file, {
