@@ -31,6 +31,7 @@
     "worker",
     "dist",
     "vite.config.ts",
-    "vinext.config.ts"
+    "vinext.config.ts",
+    "lib/pin-auth.ts"
   ]
 }
