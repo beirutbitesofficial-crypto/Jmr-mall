@@ -1,8 +1,10 @@
 import { assertJmr, isObject, JmrError, type Actor, type Role } from "@/lib/jmr-core";
 import { getDb, initDatabase, runtimeEnv, usersCount } from "@/lib/jmr-db";
 
-const COOKIE = "jmr_session";
-const SESSION_MS = 12 * 60 * 60 * 1000;
+export const SESSION_COOKIE_NAME = "jmr_session";
+export const SESSION_COOKIE_MAX_AGE_SECONDS = 12 * 60 * 60;
+const COOKIE = SESSION_COOKIE_NAME;
+const SESSION_MS = SESSION_COOKIE_MAX_AGE_SECONDS * 1000;
 const RATE_WINDOW_MS = 15 * 60 * 1000;
 const MAX_ACCOUNT_FAILURES = 5;
 const MAX_CLIENT_FAILURES = 25;
@@ -138,7 +140,7 @@ async function clearFailures(...keys: string[]): Promise<void> {
 
 type UserRow = { id: string; username: string; name: string; role: Role; active: number; passwordHash: string; sessionVersion: number };
 
-export async function login(request: Request, username: string, password: string): Promise<{ actor: Actor; setCookie: string; expiresAt: string }> {
+export async function login(request: Request, username: string, password: string): Promise<{ actor: Actor; token: string; setCookie: string; expiresAt: string }> {
   sameOrigin(request);
   await initDatabase();
   assertJmr(username.length >= 3 && username.length <= 64 && password.length > 0 && password.length <= 128, "بيانات الدخول غير صحيحة", 401);
@@ -168,7 +170,7 @@ export async function login(request: Request, username: string, password: string
   const expires = Date.now() + SESSION_MS;
   await getDb().prepare(`INSERT INTO sessions (id, user_id, session_version, expires_at, created_at) VALUES (?, ?, ?, ?, ?)`)
     .bind(sessionId, actor.id, actor.sessionVersion, expires, Date.now()).run();
-  return { actor, setCookie: cookie(token, SESSION_MS / 1000), expiresAt: new Date(expires).toISOString() };
+  return { actor, token, setCookie: cookie(token, SESSION_COOKIE_MAX_AGE_SECONDS), expiresAt: new Date(expires).toISOString() };
 }
 
 export async function readSession(request: Request): Promise<Actor | null> {
