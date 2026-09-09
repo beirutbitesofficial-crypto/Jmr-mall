@@ -11,6 +11,7 @@
     "lint": "eslint . --ignore-pattern .next"
   },
   "dependencies": {
+    "@next/swc-wasm-nodejs": "16.3.3",
     "next": "16.3.3",
     "pg": "8.16.3",
     "react": "19.2.6",
