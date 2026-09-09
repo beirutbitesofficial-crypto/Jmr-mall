@@ -2,7 +2,7 @@
   "name": "jmr-mall-audit-system",
   "version": "2.1.0",
   "private": true,
-  "engines": {"node": ">=22.13.0"},
+  "engines": {"node": ">=22.0.0"},
   "scripts": {
     "dev": "next dev",
     "build": "next build",
