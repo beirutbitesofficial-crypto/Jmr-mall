@@ -148,7 +148,6 @@ async function clearFailures(...keys: string[]): Promise<void> {
 }
 
 type UserRow = { id: string; username: string; name: string; role: Role; active: number; passwordHash: string; sessionVersion: number };
-type SessionRow = { userId: string; sessionVersion: number; expiresAt: number };
 
 export async function login(request: Request, username: string, password: string): Promise<{ actor: Actor; token: string; setCookie: string; expiresAt: string }> {
   sameOrigin(request);
@@ -184,33 +183,11 @@ export async function login(request: Request, username: string, password: string
   return { actor, token, setCookie: cookie(token, SESSION_COOKIE_MAX_AGE_SECONDS), expiresAt: new Date(expires).toISOString() };
 }
 
-async function resolveStoredSession(request: Request): Promise<SessionRow | null> {
-  const token = parseCookie(request);
-  if (token && /^[a-f0-9]{64}$/.test(token)) {
-    const id = await digest(`${token}:${sessionSecret()}`);
-    const stored = await getDb().prepare(`SELECT user_id AS userId, session_version AS sessionVersion, expires_at AS expiresAt
-      FROM sessions WHERE id = ? LIMIT 1`).bind(id).first<SessionRow>();
-    if (stored && Number(stored.expiresAt) > Date.now()) return stored;
-  }
-
-  const fingerprint = await sessionFingerprint(request);
-  return getDb().prepare(`SELECT user_id AS userId, session_version AS sessionVersion, expires_at AS expiresAt
-    FROM sessions WHERE client_fingerprint = ? AND expires_at > ?
-    ORDER BY created_at DESC LIMIT 1`).bind(fingerprint, Date.now()).first<SessionRow>();
-}
-
-export async function readSession(request: Request): Promise<Actor | null> {
+// TEMPORARY BYPASS: login screen is disabled while Hostinger auth is being stabilized.
+// Every request is treated as the owner. Remove this bypass before production use.
+export async function readSession(_request: Request): Promise<Actor | null> {
   await initDatabase();
-  const stored = await resolveStoredSession(request);
-  if (!stored || Number(stored.expiresAt) <= Date.now()) return null;
-  if (stored.userId === "bootstrap") {
-    if (await usersCount() === 0) return { id: "bootstrap", name: "إعداد المالك", role: "owner", sessionVersion: 0 };
-    return null;
-  }
-  const user = await getDb().prepare(`SELECT id, name, role, active, session_version AS sessionVersion FROM users WHERE id = ? LIMIT 1`)
-    .bind(stored.userId).first<{ id: string; name: string; role: Role; active: number; sessionVersion: number }>();
-  if (!user || Number(user.active) !== 1 || Number(user.sessionVersion) !== Number(stored.sessionVersion)) return null;
-  return { id: user.id, name: user.name, role: user.role, sessionVersion: Number(user.sessionVersion) };
+  return { id: "bootstrap", name: "JMR Owner", role: "owner", sessionVersion: 0 };
 }
 
 export async function requireSession(request: Request): Promise<Actor> {
