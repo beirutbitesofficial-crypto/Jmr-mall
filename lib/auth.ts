@@ -67,7 +67,7 @@ function parseCookie(request: Request): string | null {
 }
 
 function cookie(token: string, maxAgeSeconds: number): string {
-  return [`${COOKIE}=${token}`, "Path=/", "HttpOnly", "Secure", "SameSite=Strict", `Max-Age=${maxAgeSeconds}`].join("; ");
+  return [`${COOKIE}=${token}`, "Path=/", "HttpOnly", "Secure", "SameSite=Lax", `Max-Age=${maxAgeSeconds}`].join("; ");
 }
 
 export function jsonNoStore(body: unknown, init: ResponseInit = {}): Response {
@@ -114,7 +114,8 @@ async function rateKey(scope: string, value: string): Promise<string> {
 
 async function sessionFingerprint(request: Request): Promise<string> {
   const ua = (request.headers.get("user-agent") ?? "unknown").slice(0, 300);
-  return rateKey("session-fingerprint", `${clientAddress(request)}|${ua}`);
+  const language = (request.headers.get("accept-language") ?? "unknown").slice(0, 120);
+  return rateKey("session-fingerprint", `${ua}|${language}`);
 }
 
 async function consumeFailure(key: string, maximum: number): Promise<void> {
@@ -160,7 +161,7 @@ export async function login(request: Request, username: string, password: string
   const count = await usersCount();
   let actor: Actor | null = null;
   if (count === 0) {
-    const expectedUser = (runtimeEnv().JMR_ADMIN_USERNAME ?? "admin").trim().toLowerCase();
+    const expectedUser = (runtimeEnv().JMR_ADMIN_USERNAME ?? "jmradmin").trim().toLowerCase();
     const expectedPassword = runtimeEnv().JMR_ADMIN_PASSWORD ?? runtimeEnv().JMR_APP_PIN;
     assertJmr(typeof expectedPassword === "string" && expectedPassword.length >= 4, "أضف JMR_ADMIN_PASSWORD لإعداد الحساب الأول", 503);
     if (normalized === expectedUser && await equalSecrets(password, expectedPassword)) actor = { id: "bootstrap", name: "إعداد المالك", role: "owner", sessionVersion: 0 };
