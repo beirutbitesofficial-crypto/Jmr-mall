@@ -183,11 +183,12 @@ export async function login(request: Request, username: string, password: string
   return { actor, token, setCookie: cookie(token, SESSION_COOKIE_MAX_AGE_SECONDS), expiresAt: new Date(expires).toISOString() };
 }
 
-// TEMPORARY BYPASS: login screen is disabled while Hostinger auth is being stabilized.
-// Every request is treated as the owner. Remove this bypass before production use.
+// TEMPORARY CLIENT DEMO MODE: login is bypassed and the app runs as owner.
+// This ID is intentionally not "bootstrap" so the demo can use all normal app features
+// without being forced to create a user first. Remove this bypass before production use.
 export async function readSession(_request: Request): Promise<Actor | null> {
   await initDatabase();
-  return { id: "bootstrap", name: "JMR Owner", role: "owner", sessionVersion: 0 };
+  return { id: "demo-owner", name: "JMR Demo", role: "owner", sessionVersion: 0 };
 }
 
 export async function requireSession(request: Request): Promise<Actor> {
