@@ -18,5 +18,8 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html lang="ar" dir="rtl"><body>{children}</body></html>;
+  return <html lang="ar" dir="rtl"><body>
+    {children}
+    <a href="/import" style={{ position: "fixed", left: 18, bottom: 18, zIndex: 80, textDecoration: "none", background: "#173a6d", color: "white", borderRadius: 999, padding: "11px 16px", fontWeight: 900, boxShadow: "0 8px 28px #071b3d44" }}>استيراد Excel</a>
+  </body></html>;
 }
