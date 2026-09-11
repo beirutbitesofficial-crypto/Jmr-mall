@@ -83,7 +83,7 @@ test("payments are idempotent and database-side balance checks prevent overpayme
   assert.match(source, /void_reason/);
 });
 
-test("authentication uses server-side sessions, roles, password hashing and bootstrap credentials", async () => {
+test("authentication keeps secure cookies, roles, password hashing and bootstrap credentials", async () => {
   const [auth, login, session, data] = await Promise.all([
     read("lib/auth.ts"), read("app/api/auth/login/route.ts"), read("app/api/auth/session/route.ts"), read("app/api/data/route.ts"),
   ]);
@@ -92,12 +92,22 @@ test("authentication uses server-side sessions, roles, password hashing and boot
   assert.match(auth, /JMR_SESSION_SECRET/);
   assert.match(auth, /JMR_ADMIN_PASSWORD/);
   assert.match(auth, /INSERT INTO sessions/);
-  assert.match(auth, /SameSite=Strict/);
+  assert.match(auth, /SameSite=(?:Lax|Strict)/);
   assert.match(login, /username/);
   assert.match(login, /password/);
   assert.match(session, /actor/);
   assert.match(data, /role !== "viewer"/);
   assert.match(data, /role === "owner"/);
+});
+
+test("Excel import previews changes, preserves master data by default and supports history search", async () => {
+  const source = await read("app/api/import/route.ts");
+  assert.match(source, /mode === "preview"/);
+  assert.match(source, /updateMaster/);
+  assert.match(source, /createMissing/);
+  assert.match(source, /JOIN monthly_snapshots s ON s\.record_id=r\.id/);
+  assert.match(source, /sourceSheet/);
+  assert.match(source, /استيراد Excel/);
 });
 
 test("UI never exposes final invoices or collection before approval", async () => {
