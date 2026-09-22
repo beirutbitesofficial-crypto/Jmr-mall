@@ -94,3 +94,5 @@ tfoot td { background:#f7f8fa; font-weight:800; padding:13px 9px!important; bord
   .page-invoices .invoice-identity { margin-top:2mm; }.page-invoices .invoice-identity>div,.page-invoices .invoice-values>div { padding:1.5mm; }
   .page-invoices .invoice-total { padding:1.8mm 2.5mm; }.page-invoices .invoice-total strong { font-size:10pt; }
 }
+
+@media print {.no-print{display:none!important}.page-audit table{min-width:0!important;width:100%;font-size:7pt}.page-audit .cell-input{width:100%;font-size:7pt;min-width:0}.page-audit th:last-child,.page-audit td:last-child:has(button){display:none}.table-wrap{overflow:visible!important}}

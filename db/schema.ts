@@ -1,4 +1,4 @@
-import { integer, real, sqliteTable, text, uniqueIndex, index } from "drizzle-orm/sqlite-core";
+import { integer, real, sqliteTable, text, uniqueIndex, index, check } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 
 export const departments = sqliteTable("departments", {
@@ -17,7 +17,7 @@ export const monthlyRecords = sqliteTable("monthly_records", {
   meterFee: real("meter_fee").notNull().default(0), kiloPrice: real("kilo_price").notNull().default(0),
   rent: real("rent").notNull().default(0), services: real("services").notNull().default(0),
   previousReading: real("previous_reading").notNull().default(0), currentReading: real("current_reading").notNull().default(0),
-  locked: integer("locked").notNull().default(0), updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  confirmed: integer("confirmed").notNull().default(0), locked: integer("locked").notNull().default(0), updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, table => [uniqueIndex("idx_monthly_records_unique").on(table.month, table.departmentId), index("idx_monthly_records_month").on(table.month), index("idx_monthly_records_department_month").on(table.departmentId, table.month)]);
 
 export const authLoginRateLimits = sqliteTable("auth_login_rate_limits", {
@@ -26,3 +26,7 @@ export const authLoginRateLimits = sqliteTable("auth_login_rate_limits", {
   windowStartedAt: integer("window_started_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
 }, table => [index("idx_auth_login_rate_limits_updated_at").on(table.updatedAt)]);
+
+export const jmrRevision=sqliteTable("jmr_revision",{id:integer("id").primaryKey(),version:integer("version").notNull()},t=>[check("jmr_version_nonnegative",sql`${t.version} >= 0`)]);
+export const jmrAudit=sqliteTable("jmr_audit",{id:integer("id").primaryKey({autoIncrement:true}),at:text("at").default(sql`CURRENT_TIMESTAMP`),action:text("action").notNull(),detail:text("detail").notNull()});
+export const jmrBackups=sqliteTable("jmr_backups",{id:integer("id").primaryKey({autoIncrement:true}),at:text("at").default(sql`CURRENT_TIMESTAMP`),payload:text("payload").notNull()});

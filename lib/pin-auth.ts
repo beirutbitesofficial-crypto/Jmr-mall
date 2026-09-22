@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 
 const SESSION_COOKIE_NAME = "__Host-jmr_session";
-const SESSION_VERSION = 1;
+const SESSION_VERSION = 2;
 const SESSION_DURATION_SECONDS = 12 * 60 * 60;
 const RATE_LIMIT_WINDOW_SECONDS = 15 * 60;
 const MAX_FAILED_ATTEMPTS = 5;
@@ -172,7 +172,7 @@ export async function createSessionCookie(secret: string): Promise<{ cookie: str
     nonce: bytesToBase64Url(nonceBytes),
   };
   const encodedPayload = bytesToBase64Url(new TextEncoder().encode(JSON.stringify(payload)));
-  const signature = await sign(encodedPayload, secret);
+  const signature = await sign(encodedPayload, secret + ":" + getAuthConfig()!.pin);
   const value = `${encodedPayload}.${signature}`;
   const cookie = [
     `${SESSION_COOKIE_NAME}=${value}`,
@@ -206,7 +206,7 @@ export async function readPinSession(request: Request): Promise<PinSession | nul
   const parts = value.split(".");
   if (parts.length !== 2) return null;
   const [encodedPayload, signature] = parts;
-  if (!(await verifySignature(encodedPayload, signature, config.secret))) return null;
+  if (!(await verifySignature(encodedPayload, signature, config.secret + ":" + config.pin))) return null;
 
   const payloadBytes = base64UrlToBytes(encodedPayload);
   if (!payloadBytes) return null;
