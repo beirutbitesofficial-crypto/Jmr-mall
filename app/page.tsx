@@ -74,6 +74,7 @@ export default function Home() {
   const [invoiceFilter, setInvoiceFilter] = useState<"all" | "rent" | "electricity">("all");
   const timer = useRef<number | null>(null);
   const mutex = useRef(false);
+  const initialMonthResolved = useRef(false);
 
   const notify = useCallback((message: string, tone: "success" | "error" = "success") => {
     if (timer.current !== null) window.clearTimeout(timer.current);
@@ -90,6 +91,10 @@ export default function Home() {
     }
     const result = await apiJson(response) as unknown as DataPayload;
     setData(result);
+    if (!initialMonthResolved.current && result.months.length > 0) {
+      initialMonthResolved.current = true;
+      setMonth(result.months[0].month);
+    }
     setAuthState("signedIn");
     setStale(false);
     return result;
@@ -236,6 +241,21 @@ export default function Home() {
     });
   }
 
+  function startDepartment(department: Department) {
+    // Keep every master-data field populated when opening Edit, even when legacy/imported rows contain NULLs.
+    setDepartmentEdit({ id: department.id, draft: {
+      meterSection: String(department.meterSection ?? ""),
+      category: String(department.category ?? ""),
+      owner: String(department.owner ?? ""),
+      phone: String(department.phone ?? ""),
+      occupant: String(department.occupant ?? ""),
+      occupantNumber: String(department.occupantNumber ?? ""),
+      rentStart: String(department.rentStart ?? ""),
+      rentEnd: String(department.rentEnd ?? ""),
+      active: Number(department.active) === 1 ? 1 : 0,
+    } });
+  }
+
   function startRecord(record: MonthlyRecord) {
     setRecordEdit({ record, draft: {
       meterFee: record.meterFee, kiloPrice: record.kiloPrice, rent: record.rent, services: record.services,
@@ -309,7 +329,7 @@ export default function Home() {
 
         {page === "departments" && <section className="panel">
           <div className="panel-head"><div><h2>الأقسام والعقود</h2><p>أي تعديل جديد ما بيغيّر نسخة المستأجر الموجودة بالفواتير السابقة.</p></div>{writer && <button className="primary" disabled={disabled || data.bootstrap} onClick={() => setDepartmentEdit({ draft: { ...emptyDepartment } })}>إضافة قسم</button>}</div>
-          <div className="table-wrap"><table><thead><tr><th>القسم</th><th>النوع</th><th>المالك</th><th>المستثمر</th><th>العقد</th><th>الحالة</th><th>إجراء</th></tr></thead><tbody>{data.departments.map(department => <tr key={department.id}><td>{department.meterSection}</td><td>{department.category}</td><td>{department.owner}<small>{department.phone}</small></td><td>{department.occupant}<small>{department.occupantNumber}</small></td><td>{department.rentStart || "—"}<small>{department.rentEnd || "—"}</small></td><td>{department.active ? "فعّال" : "مؤرشف"}</td><td>{writer && <button className="secondary" disabled={disabled || data.bootstrap} onClick={() => setDepartmentEdit({ id: department.id, draft: { ...department } })}>تعديل / أرشفة</button>}</td></tr>)}</tbody></table></div>
+          <div className="table-wrap"><table><thead><tr><th>القسم</th><th>النوع</th><th>المالك</th><th>المستثمر</th><th>العقد</th><th>الحالة</th><th>إجراء</th></tr></thead><tbody>{data.departments.map(department => <tr key={department.id}><td>{department.meterSection}</td><td>{department.category}</td><td>{department.owner}<small>{department.phone}</small></td><td>{department.occupant}<small>{department.occupantNumber}</small></td><td>{department.rentStart || "—"}<small>{department.rentEnd || "—"}</small></td><td>{department.active ? "فعّال" : "مؤرشف"}</td><td>{writer && <button className="secondary" disabled={disabled || data.bootstrap} onClick={() => startDepartment(department)}>تعديل / أرشفة</button>}</td></tr>)}</tbody></table></div>
         </section>}
 
         {page === "invoices" && <section className="invoice-page">
