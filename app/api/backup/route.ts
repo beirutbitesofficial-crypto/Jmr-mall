@@ -1,6 +1,6 @@
-import { env } from 'cloudflare:workers';
+import { env, init } from '@/lib/database';
 import { requirePinSession } from '@/lib/pin-auth';
-import { GET as data, init } from '../data/route';
+import { GET as data } from '../data/route';
 export async function GET(request:Request) {
   const denied=await requirePinSession(request); if(denied)return denied;
   await init();
@@ -16,7 +16,7 @@ export async function GET(request:Request) {
 }
 export async function POST(request:Request) {
   const denied=await requirePinSession(request); if(denied)return denied;
-  if(request.headers.get('origin')!==new URL(request.url).origin)return new Response(null,{status:403});
+  if(request.headers.get('origin')!==(process.env.APP_ORIGIN||new URL(request.url).origin))return new Response(null,{status:403});
   await init();
   try {
     const raw=await request.text();if(raw.length>5000000)throw Error('الملف كبير جداً');
@@ -44,5 +44,5 @@ export async function POST(request:Request) {
     for(const r of b.records)q.push(env.DB.prepare('INSERT INTO monthly_records(id,month,department_id,meter_fee,kilo_price,rent,services,previous_reading,current_reading,locked,confirmed) VALUES (?,?,?,?,?,?,?,?,?,?,?)').bind(r.id,r.month,r.departmentId,...numericFields.map(k=>r[k]),r.locked,r.confirmed));
     q.push(env.DB.prepare('INSERT INTO jmr_audit(action,detail) VALUES (?,?)').bind('restore',`استرجاع ${b.records.length} سجل عبر جلسة PIN مشتركة`));
     await env.DB.batch(q);return Response.json({ok:true});
-  }catch(e){return Response.json({error:/CHECK constraint/i.test(String(e))?'تغيّرت البيانات. حدّث الصفحة قبل الاسترجاع.':e instanceof Error?e.message:'فشل الاسترجاع'},{status:400});}
+  }catch(e){return Response.json({error:/CHECK constraint|REVISION_CONFLICT/i.test(String(e))?'تغيّرت البيانات. حدّث الصفحة قبل الاسترجاع.':e instanceof Error?e.message:'فشل الاسترجاع'},{status:400});}
 }

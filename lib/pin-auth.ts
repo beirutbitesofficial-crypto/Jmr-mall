@@ -1,4 +1,4 @@
-import { env } from "cloudflare:workers";
+import { env, init } from "@/lib/database";
 
 const SESSION_COOKIE_NAME = "__Host-jmr_session";
 const SESSION_VERSION = 2;
@@ -6,16 +6,6 @@ const SESSION_DURATION_SECONDS = 12 * 60 * 60;
 const RATE_LIMIT_WINDOW_SECONDS = 15 * 60;
 const MAX_FAILED_ATTEMPTS = 5;
 const RATE_LIMIT_RETENTION_SECONDS = 24 * 60 * 60;
-
-const createAuthRateLimits = `CREATE TABLE IF NOT EXISTS auth_login_rate_limits (
-  client_key TEXT PRIMARY KEY NOT NULL,
-  failure_count INTEGER NOT NULL DEFAULT 0,
-  window_started_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
-)`;
-
-const createAuthRateLimitsUpdatedAtIndex =
-  "CREATE INDEX IF NOT EXISTS idx_auth_login_rate_limits_updated_at ON auth_login_rate_limits(updated_at)";
 
 type RuntimeEnv = {
   DB?: D1DatabaseBinding;
@@ -67,8 +57,8 @@ function runtimeEnv(): RuntimeEnv {
 
 export function getAuthConfig(): AuthConfig | null {
   const { JMR_APP_PIN: pin, JMR_SESSION_SECRET: secret } = runtimeEnv();
-  if (typeof pin !== "string" || pin.length === 0) return null;
-  if (typeof secret !== "string" || secret.length === 0) return null;
+  if (typeof pin !== "string" || !/^\d{4,8}$/.test(pin)) return null;
+  if (typeof secret !== "string" || secret.length < 32) return null;
   return { pin, secret };
 }
 
@@ -250,13 +240,7 @@ async function clientKey(request: Request, secret: string): Promise<string> {
   return sign(`login-rate-limit:${address}`, secret);
 }
 
-async function ensureRateLimitSchema(): Promise<void> {
-  const db = getD1();
-  await db.batch([
-    db.prepare(createAuthRateLimits),
-    db.prepare(createAuthRateLimitsUpdatedAtIndex),
-  ]);
-}
+async function ensureRateLimitSchema(): Promise<void> { await init(); }
 
 export async function getLoginRateLimit(request: Request, secret: string): Promise<RateLimitStatus> {
   await ensureRateLimitSchema();
@@ -282,16 +266,16 @@ export async function recordFailedLogin(request: Request, secret: string): Promi
   await db.batch([
     db.prepare(`INSERT INTO auth_login_rate_limits (client_key, failure_count, window_started_at, updated_at)
       VALUES (?, 1, ?, ?)
-      ON CONFLICT(client_key) DO UPDATE SET
+      ON DUPLICATE KEY UPDATE
         failure_count = CASE
           WHEN auth_login_rate_limits.window_started_at <= ? THEN 1
           ELSE auth_login_rate_limits.failure_count + 1
         END,
         window_started_at = CASE
-          WHEN auth_login_rate_limits.window_started_at <= ? THEN excluded.window_started_at
+          WHEN auth_login_rate_limits.window_started_at <= ? THEN VALUES(window_started_at)
           ELSE auth_login_rate_limits.window_started_at
         END,
-        updated_at = excluded.updated_at`).bind(key, now, now, resetBefore, resetBefore),
+        updated_at = VALUES(updated_at)`).bind(key, now, now, resetBefore, resetBefore),
     db.prepare("DELETE FROM auth_login_rate_limits WHERE updated_at < ?")
       .bind(now - RATE_LIMIT_RETENTION_SECONDS),
   ]);

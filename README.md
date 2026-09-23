@@ -1,32 +1,55 @@
-# By JMR Mall
+# By JMR Mall — Hostinger edition
 
-Arabic mall department, meter reading, rent and service audit application. This repository replaces the previous application with the deployed PIN-based version from source commit `26cd8719a46db27ae72080c0f99260a29daa86b4`.
+Next.js application for department records, monthly meter readings, rent/service invoices, backups and audit history. This version runs on a standard Node.js server and uses a dedicated, persistent MySQL/MariaDB database. It does not require Cloudflare D1 or ChatGPT sign-in.
 
-Previous repository main is preserved at `backup/before-sites-replacement-20260922` (commit `c6a1608dc7abafe795241b2cb6bec19c7c6d8cc5`). The replacement intentionally uses the site's shared PIN flow; the previous version's individual accounts, collection/payment features and roles are not part of this app.
+## Hostinger deployment
 
-## Runtime and verification
+1. Use a Hostinger plan with **Node.js Web Apps** enabled.
+2. Create a **new, dedicated MySQL database** in hPanel → website dashboard → Databases → Management. Use the exact host/name/user shown there; do not reuse a database containing unrelated applications.
+3. Import GitHub repository `beirutbitesofficial-crypto/Jmr-mall`, branch `main`.
+4. Framework: **Next.js**. Root: `.`. Node: **22.x (22.13 or later)**. Install: `npm ci`. Build: `npm run build`. Start: `npm start`. Output, if requested: `.next`. The start script respects Hostinger's `PORT` environment variable.
+5. Set the variables from `.env.example` in Hostinger's environment settings. Set `APP_ORIGIN` to the exact HTTPS site origin, without a trailing slash. Set a 4–8 digit PIN and a random session secret of at least 32 characters. Never commit real credentials.
+6. Deploy and wait for a successful build/start. Open `/api/health`; it returns HTTP 200 with `{"ok":true}` only when MySQL is reachable and the schema is initialized.
+7. Sign in and verify a test department, month, save, approval, Excel export and backup/restore on the actual host before relying on it for accounting.
 
-- Node.js 22.13+ for development/build; tests using node:sqlite require Node 22.13+.
-- Production: Cloudflare Workers with a D1 database bound as `DB`.
-- `npm ci`, `npm test`, `npm run lint`, `npx tsc --noEmit`, `npm run build`.
-- Build output: `dist`. This is a Worker build, not a static site or a standard Node server.
-- Apply the SQL migrations in `drizzle/`, in journal order, before serving the corresponding code. Existing live Sites data is not stored in this repository.
-- Set runtime secrets `JMR_APP_PIN` (4–8 digits for this UI) and `JMR_SESSION_SECRET` (a long randomly generated value). Never commit their real values. A PIN or session-secret change invalidates existing sessions.
+The schema is created idempotently on the first database connection, or explicitly with `npm run db:migrate`. It does not drop/reset tables on redeploy. The database user needs permission to create the app's tables on first initialization. This schema is for a fresh Hostinger database, not an automatic conversion of another application's schema.
 
-The retained `.openai/hosting.json` is non-secret source metadata for the original hosted site, not a portable database credential. A separate deployment needs its own D1 binding, migration setup and secrets. Do not deploy this build directly to a Hostinger Node application: it requires a database/runtime port first. No new hosting deployment, DNS change, or data transfer is performed by replacing this GitHub repository.
+## Environment variables
 
-## Included behavior
+| Variable | Value |
+|---|---|
+| `DB_HOST` | Exact MySQL server from hPanel |
+| `DB_PORT` | Usually `3306` |
+| `DB_NAME` | Full database name, including account prefix |
+| `DB_USER` | Full database username |
+| `DB_PASSWORD` | Database password |
+| `DB_SSL` | `true` if the database server requires TLS; otherwise `false` |
+| `DB_SSL_CA` | Optional CA certificate when using TLS |
+| `JMR_APP_PIN` | Your 4–8 digit PIN |
+| `JMR_SESSION_SECRET` | Random secret, at least 32 characters |
+| `APP_ORIGIN` | Exact public HTTPS origin |
 
-- Confirmed records before month approval, export and printing.
-- Guards against negative consumption and changes affecting a locked later month.
-- Explicit row saving and whole-dataset optimistic revision checks.
-- New departments are added to open months.
-- Valid calendar dates and bounded nonnegative numeric inputs.
-- Automatic pre-change snapshots (last 100), downloadable backups and validated transactional restore.
-- Audit history identifies operations/times; shared PIN access does not identify individual people.
+Alternatively, `DATABASE_URL=mysql://user:encoded-password@host:3306/database` replaces the five separate DB connection variables. SSL certificate verification stays enabled when TLS is enabled. Do not put DB variables or secrets under a `NEXT_PUBLIC_` prefix.
 
-The UI's backup tool exports the currently stored data, not unsaved local edits. Keep a separate off-site backup; same-database snapshots do not protect against loss of the database itself. Never put tenant data, exported backups, session cookies or production secrets in this public repository.
+Generate a session secret using a password manager or `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"`, then put it in the hosting environment only.
 
-## Customer URL
+## Move existing site data
 
-Use a custom domain on the hosting provider for a branded customer-facing URL. Moving source code to GitHub alone does not change the current live URL. The app uses its own PIN screen and does not require a ChatGPT account to authenticate.
+The source repository contains **no tenant data and no production credentials**. On the old site's **النسخ الاحتياطية وسجل التعديلات** panel, download the current complete JSON backup. On the new Hostinger app, sign in, open the same panel and restore that file. Validate record counts, tenant names and monthly totals before switching customers to the new domain. The old site and new database are independent and do not synchronize.
+
+Business-data restore replaces departments and monthly records transactionally, after validation and a pre-restore snapshot. It leaves the new database's existing audit history in place; historical audit entries in the imported file remain available in that source file, and are not merged into the new audit table.
+
+## Safety and backups
+
+The app guards month locks, nonnegative consumption, calendar dates, stale browser revisions and authenticated writes. Save/review each record before approving, exporting or printing a month. MySQL writes run in one connection/transaction, and stale revisions are rejected before modifying data. Database-backed storage survives app rebuilds.
+
+Before each app mutation, a snapshot is stored in the same database; the last 100 snapshots are retained during ordinary mutations. These snapshots protect against editing mistakes, not database loss. Download off-site backups regularly and enable hosting/database backups. Shared PIN access records action/time rather than individual identity. Changing PIN or session secret invalidates prior signed sessions.
+
+## Local verification
+
+- `npm test`: contract checks, route behavior against an isolated SQLite test double, and transaction/revision tests against a mocked MySQL driver.
+- `npm run typecheck`
+- `npm run lint`
+- `npm run build`
+
+The automated test doubles do not substitute for an integration test on the actual MySQL/MariaDB server. No Hostinger database credentials are bundled, so final hosted database/login/export verification must be performed after environment configuration.
