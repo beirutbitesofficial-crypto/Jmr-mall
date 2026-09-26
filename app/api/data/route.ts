@@ -1,5 +1,5 @@
 import { env, init, snapshot } from "@/lib/database";
-import { requirePinSession } from "@/lib/pin-auth";
+import { isAllowedOrigin, requirePinSession } from "@/lib/pin-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -37,6 +37,25 @@ function validDate(value: string): boolean {
   return value === "" || (/^\d{4}-(0[1-9]|1[0-2])-([012]\d|3[01])$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0,10) === value);
 }
 
+const MAX_REQUEST_BYTES = 100_000;
+
+// Latest month that may be created: the current month in Beirut plus one, so next month
+// can be prepared early but a mistyped far-future month cannot block earlier months.
+function latestAllowedMonth(now = new Date()): string {
+  const parts = new Intl.DateTimeFormat("en", { timeZone: "Asia/Beirut", year: "numeric", month: "2-digit" }).formatToParts(now);
+  const year = Number(parts.find(part => part.type === "year")?.value);
+  const month = Number(parts.find(part => part.type === "month")?.value);
+  return month === 12 ? `${year + 1}-01` : `${year}-${String(month + 1).padStart(2, "0")}`;
+}
+
+// Snapshot saved as the automatic backup before every change; a failed read must stop
+// the change instead of storing an error message as the backup.
+async function currentData(request: Request): Promise<JsonObject> {
+  const response = await snapshot(() => readData(request));
+  if (!response.ok) throw new Error("Snapshot before change failed");
+  return response.json();
+}
+
 export async function GET(request: Request) {
   const denied=await requirePinSession(request);if(denied)return denied;
   try { return await snapshot(()=>readData(request)); } catch {return Response.json({error:"تعذّر تحميل البيانات"},{status:503});}
@@ -62,13 +81,15 @@ export async function POST(request: Request) {
   }
 }
 async function mutate(request: Request) {
-  if (request.headers.get("origin") !== (process.env.APP_ORIGIN || new URL(request.url).origin)) return Response.json({error:"مصدر الطلب غير مسموح"},{status:403});
+  if (!isAllowedOrigin(request)) return Response.json({error:"مصدر الطلب غير مسموح"},{status:403});
   const unauthorized = await requirePinSession(request);
   if (unauthorized) return unauthorized;
   await init();
   let body: unknown;
   try {
-    body = await request.json();
+    const raw = await request.text();
+    if (raw.length > MAX_REQUEST_BYTES) return Response.json({ error: "الطلب كبير جداً" }, { status: 413 });
+    body = JSON.parse(raw);
   } catch {
     return Response.json({ error: "طلب غير صالح" }, { status: 400 });
   }
@@ -102,6 +123,7 @@ async function mutate(request: Request) {
   } else if (body.action === "createMonth") {
     if (!validMonth(body.month)) return Response.json({ error: "الشهر غير صالح" }, { status: 400 });
     const month = body.month;
+    if (month > latestAllowedMonth()) return Response.json({ error: "لا يمكن إنشاء شهر بعد الشهر القادم" }, { status: 400 });
     const exists = await env.DB.prepare("SELECT id FROM monthly_records WHERE month=? LIMIT 1").bind(month).first();
     if(exists) return Response.json({error:"الشهر موجود"},{status:409});
     const latest = await env.DB.prepare("SELECT MAX(month) AS month FROM monthly_records").first<{month:string|null}>();
@@ -149,10 +171,10 @@ async function mutate(request: Request) {
   } else {
     return Response.json({ error: "unknown action" }, { status: 400 });
   }
-  const snapshot = await GET(request).then(r=>r.json());
+  const before = await currentData(request);
   await env.DB.batch([
     env.DB.prepare("UPDATE jmr_revision SET version=CASE WHEN version=? THEN version+1 ELSE -1 END WHERE id=1").bind(body.version),
-    env.DB.prepare("INSERT INTO jmr_backups(payload) VALUES (?)").bind(JSON.stringify(snapshot)),
+    env.DB.prepare("INSERT INTO jmr_backups(payload) VALUES (?)").bind(JSON.stringify(before)),
     ...statements,
     env.DB.prepare("INSERT INTO jmr_audit(action,detail) VALUES (?,?)").bind(body.action,JSON.stringify(body)),
     env.DB.prepare("DELETE FROM jmr_backups WHERE id NOT IN (SELECT id FROM (SELECT id FROM jmr_backups ORDER BY id DESC LIMIT 100) AS retained_backups)"),

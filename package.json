@@ -15,11 +15,12 @@
     "db:migrate": "node --experimental-strip-types scripts/migrate.ts"
   },
   "dependencies": {
+    "@fontsource/ibm-plex-sans-arabic": "5.3.0",
+    "mysql2": "3.15.3",
     "next": "16.2.6",
     "react": "19.2.6",
     "react-dom": "19.2.6",
-    "xlsx": "^0.18.5",
-    "mysql2": "3.15.3"
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "4.2.1",

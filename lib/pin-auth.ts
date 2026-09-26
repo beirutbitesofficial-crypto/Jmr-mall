@@ -231,10 +231,14 @@ export async function isCorrectPin(candidate: string, expected: string): Promise
   return equalSecretValues(candidate, expected);
 }
 
+const GLOBAL_RATE_LIMIT_KEY = "global";
+const MAX_GLOBAL_FAILED_ATTEMPTS = 20;
+
+// Proxy headers are client-controlled unless a trusted proxy overwrites them, so the
+// per-client limit is backed by a global limit that no header can bypass.
 async function clientKey(request: Request, secret: string): Promise<string> {
   const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-  const address = request.headers.get("cf-connecting-ip")?.trim()
-    || request.headers.get("x-real-ip")?.trim()
+  const address = request.headers.get("x-real-ip")?.trim()
     || forwarded
     || "unknown";
   return sign(`login-rate-limit:${address}`, secret);
@@ -242,29 +246,9 @@ async function clientKey(request: Request, secret: string): Promise<string> {
 
 async function ensureRateLimitSchema(): Promise<void> { await init(); }
 
-export async function getLoginRateLimit(request: Request, secret: string): Promise<RateLimitStatus> {
-  await ensureRateLimitSchema();
-  const db = getD1();
-  const now = Math.floor(Date.now() / 1000);
-  const key = await clientKey(request, secret);
-  const row = await db.prepare(
-    "SELECT failure_count AS failureCount, window_started_at AS windowStartedAt FROM auth_login_rate_limits WHERE client_key = ?",
-  ).bind(key).first<RateLimitRow>();
-
-  if (!row || row.failureCount < MAX_FAILED_ATTEMPTS) return { limited: false, retryAfter: 0 };
-  const retryAfter = row.windowStartedAt + RATE_LIMIT_WINDOW_SECONDS - now;
-  return retryAfter > 0
-    ? { limited: true, retryAfter }
-    : { limited: false, retryAfter: 0 };
-}
-
-export async function recordFailedLogin(request: Request, secret: string): Promise<void> {
-  const db = getD1();
-  const now = Math.floor(Date.now() / 1000);
+function rateLimitIncrement(db: D1DatabaseBinding, key: string, now: number): D1PreparedStatementBinding {
   const resetBefore = now - RATE_LIMIT_WINDOW_SECONDS;
-  const key = await clientKey(request, secret);
-  await db.batch([
-    db.prepare(`INSERT INTO auth_login_rate_limits (client_key, failure_count, window_started_at, updated_at)
+  return db.prepare(`INSERT INTO auth_login_rate_limits (client_key, failure_count, window_started_at, updated_at)
       VALUES (?, 1, ?, ?)
       ON DUPLICATE KEY UPDATE
         failure_count = CASE
@@ -272,16 +256,53 @@ export async function recordFailedLogin(request: Request, secret: string): Promi
           ELSE auth_login_rate_limits.failure_count + 1
         END,
         window_started_at = CASE
-          WHEN auth_login_rate_limits.window_started_at <= ? THEN VALUES(window_started_at)
+          WHEN auth_login_rate_limits.window_started_at <= ? THEN ?
           ELSE auth_login_rate_limits.window_started_at
         END,
-        updated_at = VALUES(updated_at)`).bind(key, now, now, resetBefore, resetBefore),
-    db.prepare("DELETE FROM auth_login_rate_limits WHERE updated_at < ?")
-      .bind(now - RATE_LIMIT_RETENTION_SECONDS),
+        updated_at = ?`).bind(key, now, now, resetBefore, resetBefore, now, now);
+}
+
+// Counts the attempt before the PIN is checked. Each increment is atomic, so parallel
+// requests cannot all slip past the limit before any failure is recorded.
+export async function reserveLoginAttempt(request: Request, secret: string): Promise<RateLimitStatus> {
+  await ensureRateLimitSchema();
+  const db = getD1();
+  const now = Math.floor(Date.now() / 1000);
+  const key = await clientKey(request, secret);
+  await db.batch([
+    rateLimitIncrement(db, key, now),
+    rateLimitIncrement(db, GLOBAL_RATE_LIMIT_KEY, now),
   ]);
+  // Housekeeping stays outside the counting transaction so it never holds its locks.
+  await db.prepare("DELETE FROM auth_login_rate_limits WHERE updated_at < ?").bind(now - RATE_LIMIT_RETENTION_SECONDS).run().catch(() => undefined);
+  let retryAfter = 0;
+  for (const [rowKey, maximum] of [[key, MAX_FAILED_ATTEMPTS], [GLOBAL_RATE_LIMIT_KEY, MAX_GLOBAL_FAILED_ATTEMPTS]] as const) {
+    const row = await db.prepare(
+      "SELECT failure_count AS failureCount, window_started_at AS windowStartedAt FROM auth_login_rate_limits WHERE client_key = ?",
+    ).bind(rowKey).first<RateLimitRow>();
+    if (row && row.failureCount > maximum) retryAfter = Math.max(retryAfter, row.windowStartedAt + RATE_LIMIT_WINDOW_SECONDS - now, 1);
+  }
+  return { limited: retryAfter > 0, retryAfter };
 }
 
 export async function clearFailedLogins(request: Request, secret: string): Promise<void> {
+  const db = getD1();
   const key = await clientKey(request, secret);
-  await getD1().prepare("DELETE FROM auth_login_rate_limits WHERE client_key = ?").bind(key).run();
+  await db.batch([
+    db.prepare("DELETE FROM auth_login_rate_limits WHERE client_key = ?").bind(key),
+    // A successful login gives back its own reserved slot in the global window.
+    db.prepare("UPDATE auth_login_rate_limits SET failure_count = GREATEST(failure_count - 1, 0) WHERE client_key = ?").bind(GLOBAL_RATE_LIMIT_KEY),
+  ]);
+}
+
+// Same-origin check for state-changing requests. APP_ORIGIN wins when set; otherwise the
+// Origin must match the host the browser addressed (proxies keep Host or X-Forwarded-Host).
+export function isAllowedOrigin(request: Request): boolean {
+  const origin = request.headers.get("origin");
+  if (!origin) return false;
+  const configured = process.env.APP_ORIGIN?.replace(/\/+$/, "");
+  if (configured) return origin === configured;
+  if (origin === new URL(request.url).origin) return true;
+  const host = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim() || request.headers.get("host");
+  try { return !!host && new URL(origin).host === host; } catch { return false; }
 }

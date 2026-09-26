@@ -1,4 +1,4 @@
-import { env } from "@/lib/database";
+import { env, snapshot } from "@/lib/database";
 import * as XLSX from "xlsx";
 import { requirePinSession } from "@/lib/pin-auth";
 
@@ -58,6 +58,10 @@ export async function GET(request: Request) {
     return Response.json({ error: "Invalid month" }, { status: 400 });
   }
 
+  return snapshot(() => buildWorkbook(month));
+}
+
+async function buildWorkbook(month: string) {
   const incomplete=await env.DB.prepare("SELECT id FROM monthly_records WHERE month=? AND (confirmed=0 OR current_reading<previous_reading) LIMIT 1").bind(month).first();
   if(incomplete)return Response.json({error:"راجع واحفظ جميع سجلات الشهر قبل تصدير الفواتير"},{status:409});
   const [departmentsResult, recordsResult] = await Promise.all([
@@ -66,6 +70,7 @@ export async function GET(request: Request) {
   ]);
 
   const departments = departmentsResult.results;
+  if (recordsResult.results.length === 0) return Response.json({ error: "لا يوجد سجل لهذا الشهر" }, { status: 404 });
   const records = new Map(recordsResult.results.map(record => [record.departmentId, record]));
 
   const pageOneRows = departments.map(department => [
@@ -79,8 +84,10 @@ export async function GET(request: Request) {
     asDate(department.rentEnd),
   ]);
 
-  const activeDepartments = departments.filter(department => department.active);
-  const pageTwoRows = activeDepartments.map(department => {
+  // Invoices only for departments that have a record in this month; a department added
+  // after the month was approved did not exist then and must not get a $0 invoice.
+  const billedDepartments = departments.filter(department => records.has(department.id));
+  const pageTwoRows = billedDepartments.map(department => {
     const record = records.get(department.id);
     return [
       department.meterSection,
