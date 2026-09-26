@@ -33,6 +33,8 @@ export default function Home() {
   const [authState, setAuthState] = useState<AuthState>("checking");
   const [version,setVersion] = useState(0);
   const [editingId,setEditingId] = useState<number|null>(null);
+  // Raw text of number boxes being edited, so a cleared box stays empty instead of becoming 0.
+  const [rawInputs,setRawInputs] = useState<Record<string,string>>({});
   const [dirty,setDirty] = useState(false);
   const dirtyRef = useRef(false);
   const [connected,setConnected] = useState(false);
@@ -77,7 +79,7 @@ export default function Home() {
       }
       if (!response.ok) throw new Error("تعذّر تحميل البيانات");
       const data = await response.json();
-      setConnected(true);setVersion(data.version);setAudit(data.audit??[]);setDirty(false);setEditingId(null);dirtyRef.current=false;
+      setConnected(true);setVersion(data.version);setAudit(data.audit??[]);setDirty(false);setEditingId(null);setRawInputs({});dirtyRef.current=false;
       setDepartments(data.departments ?? []);
       setRecords(data.records ?? []);
     } catch (error) {
@@ -149,6 +151,9 @@ export default function Home() {
   const createMonth = async () => {
     try {
       if(dirty)throw new Error("احفظ تعديل السجل أولاً");
+      const latestMonth = records.reduce((latest, record) => record.month > latest ? record.month : latest, "");
+      if(latestMonth && selectedMonth < latestMonth) throw new Error("أنشئ الأشهر بالترتيب الزمني");
+      if(latestMonth && selectedMonth !== previousMonth(latestMonth, -1) && !window.confirm(`آخر شهر مسجّل هو ${monthLabel(latestMonth)}. إنشاء ${monthLabel(selectedMonth)} سيتخطى أشهراً ولن يمكن إنشاء أشهر قبله لاحقاً. متابعة؟`)) return;
       await api({ action: "createMonth", month: selectedMonth });
       notify("تم تجهيز الشهر ونقل القراءات السابقة");
     } catch (error) {
@@ -156,12 +161,19 @@ export default function Home() {
     }
   };
 
-  const updateRecord = (id: number, field: keyof MonthlyRecord, value: number) => {
+  const updateRecord = (id: number, field: keyof MonthlyRecord, raw: string) => {
     setDirty(true);setEditingId(id);dirtyRef.current=true;
-    setRecords(old => old.map(r => r.id === id ? { ...r, [field]: value } : r));
+    setRawInputs(old => ({ ...old, [`${id}:${field}`]: raw }));
+    const value = Number(raw);
+    if (raw.trim() !== "" && Number.isFinite(value)) setRecords(old => old.map(r => r.id === id ? { ...r, [field]: value } : r));
   };
 
   const saveRecord = async (record: MonthlyRecord) => {
+    const emptyField = recordFields.find(field => { const raw = rawInputs[`${record.id}:${field}`]; return raw !== undefined && (raw.trim() === "" || !Number.isFinite(Number(raw)) || Number(raw) < 0); });
+    if (emptyField) {
+      notify(`أدخل قيمة صحيحة في خانة ${fieldLabel(emptyField)}`, "error");
+      return;
+    }
     if (record.currentReading < record.previousReading) {
       notify("العداد الحالي يجب أن يكون أكبر من أو يساوي العداد السابق", "error");
       return;
@@ -189,6 +201,7 @@ export default function Home() {
 
   const toggleLock = async () => {
     if(dirty){notify("احفظ تعديلاتك قبل اعتماد الشهر", "error");return;}
+    if(locked && !window.confirm(`فتح ${monthLabel(selectedMonth)} يسمح بتعديل أرقام شهر معتمد. متابعة؟`)) return;
     try {
       await api({ action: "lockMonth", month: selectedMonth, locked: locked ? 0 : 1 });
       notify(locked ? "تم فتح الشهر للتعديل" : "تم اعتماد وإقفال الشهر");
@@ -250,7 +263,7 @@ export default function Home() {
     if(dirty||saving){notify("احفظ تعديلاتك أولاً","error");return;}
     if(!window.confirm("الاسترجاع سيستبدل بيانات الأقسام والأشهر. ستُحفظ نسخة من الحالة الحالية تلقائياً. متابعة؟"))return;
     setSaving(true);
-    try{const backup=JSON.parse(await file.text());const response=await fetch('/api/backup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({backup,version})});const result=await response.json();if(!response.ok)throw new Error(result.error);await refresh();notify("تم الاسترجاع");}catch(e){notify(e instanceof Error?e.message:"فشل الاسترجاع","error");}finally{setSaving(false);}
+    try{const backup=JSON.parse(await file.text());const response=await fetch('/api/backup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({backup,version})});const result=await response.json().catch(()=>({})) as {error?:string};if(!response.ok)throw new Error(result.error??"فشل الاسترجاع");await refresh();notify("تم الاسترجاع");}catch(e){notify(e instanceof Error?e.message:"فشل الاسترجاع","error");}finally{setSaving(false);}
   };
   const downloadExcel = async () => {
     if(dirty){notify("احفظ التعديلات قبل التنزيل", "error");return;}
@@ -261,7 +274,10 @@ export default function Home() {
         setAuthState("signedOut");
         throw new Error("انتهت الجلسة. أدخل رمز الدخول من جديد");
       }
-      if (!response.ok) throw new Error("تعذّر تجهيز ملف Excel");
+      if (!response.ok) {
+        const result = await response.json().catch(() => null) as { error?: string } | null;
+        throw new Error(result?.error ?? "تعذّر تجهيز ملف Excel");
+      }
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
@@ -288,7 +304,7 @@ export default function Home() {
       <main className="auth-shell" dir="rtl">
         <section className="login-card" aria-labelledby="login-title">
           <div className="login-brand"><span className="brand-mark">J</span><div><strong>BY JMR</strong><small>MALL AUDIT SYSTEM</small></div></div>
-          <div className="login-copy"><span className="lock-mark">●</span><h1 id="login-title">تسجيل الدخول</h1><p>أدخل رمز الـ PIN للوصول إلى نظام التدقيق</p></div>
+          <div className="login-copy"><span className="lock-mark"><Icon name="lock" /></span><h1 id="login-title">تسجيل الدخول</h1><p>أدخل رمز الـ PIN للوصول إلى نظام التدقيق</p></div>
           <form onSubmit={submitPin}>
             <label className="pin-field"><span>رمز الدخول</span><input autoFocus autoComplete="current-password" inputMode="numeric" pattern="[0-9]*" type="password" maxLength={8} value={pin} onChange={event => setPin(event.target.value.replace(/\D/g, ""))} placeholder="••••" aria-describedby={authError ? "pin-error" : undefined} /></label>
             {authError && <p className="auth-error" id="pin-error" role="alert">{authError}</p>}
@@ -305,9 +321,9 @@ export default function Home() {
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark">J</span><div><strong>BY JMR</strong><small>MALL AUDIT SYSTEM</small></div></div>
         <nav>
-          <button type="button" aria-current={page === "audit" ? "page" : undefined} className={page === "audit" ? "active" : ""} onClick={() => setPage("audit")}><span>▦</span> التدقيق الشهري</button>
-          <button type="button" aria-current={page === "departments" ? "page" : undefined} className={page === "departments" ? "active" : ""} onClick={() => setPage("departments")}><span>⌂</span> بيانات الأقسام</button>
-          <button type="button" aria-current={page === "invoices" ? "page" : undefined} className={page === "invoices" ? "active" : ""} onClick={() => setPage("invoices")}><span>▤</span> الفواتير والطباعة</button>
+          <button type="button" aria-current={page === "audit" ? "page" : undefined} className={page === "audit" ? "active" : ""} onClick={() => setPage("audit")}><Icon name="audit" /><span className="nav-label">التدقيق الشهري</span></button>
+          <button type="button" aria-current={page === "departments" ? "page" : undefined} className={page === "departments" ? "active" : ""} onClick={() => setPage("departments")}><Icon name="departments" /><span className="nav-label">بيانات الأقسام</span></button>
+          <button type="button" aria-current={page === "invoices" ? "page" : undefined} className={page === "invoices" ? "active" : ""} onClick={() => setPage("invoices")}><Icon name="invoices" /><span className="nav-label">الفواتير والطباعة</span></button>
         </nav>
         <div className="side-note"><span className="status-dot" /> {connected ? "تم تحميل البيانات" : "الاتصال غير مؤكد"}<small>{dirty ? "عندك تعديلات غير محفوظة" : "راجع حالة الحفظ"}</small></div>
         <div className="profile-area">
@@ -317,19 +333,27 @@ export default function Home() {
       </aside>
 
       <section className="workspace">
-        <button type="button" className="secondary no-print" onClick={async()=>{setShowMaintenance(v=>!v);try{const r=await fetch('/api/backup?list=1');if(r.ok)setBackups(await r.json());}catch{notify("تعذّر تحميل النسخ","error");}}}>النسخ الاحتياطية وسجل التعديلات</button>
-        {showMaintenance&&<section className="panel no-print" style={{padding:20,marginTop:15}}><h2>حماية البيانات</h2><p>نسخة تلقائية قبل كل تغيير، آخر 100 نسخة. نزّل نسخة خارج الموقع بشكل دوري.</p><a href="/api/backup" download>تنزيل نسخة كاملة</a><label style={{display:'block',marginTop:12}}>استرجاع ملف نسخة <input type="file" accept=".json" disabled={saving||dirty} onChange={e=>{const f=e.target.files?.[0];if(f)void restoreBackup(f);e.target.value='';}} /></label><details><summary>النسخ التلقائية ({backups.length})</summary>{backups.map(b=><p key={b.id}><a href={`/api/backup?id=${b.id}`} download>{b.at} UTC — #{b.id}</a></p>)}</details><details><summary>سجل التعديلات — آخر 200 عملية</summary><p>الدخول برمز مشترك؛ السجل يحدّد العملية والتوقيت، ولا يثبت هوية الشخص.</p>{audit.map(a=><details key={a.id}><summary>{a.at} UTC — {a.action}</summary><pre style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{a.detail}</pre></details>)}</details><button type="button" onClick={()=>{if(!dirty||window.confirm('إلغاء تعديلاتك غير المحفوظة وتحميل آخر نسخة؟'))void refresh();}}>إعادة تحميل البيانات</button></section>}
         <header className="topbar">
           <div><p className="eyebrow">BY JMR MALL</p><h1>{page === "audit" ? "التدقيق الشهري" : page === "departments" ? "بيانات الأقسام والمستأجرين" : "الفواتير الشهرية"}</h1><p>{page === "audit" ? "مراجعة استهلاك العدادات ومستحقات الأقسام" : page === "departments" ? "المرجع الأساسي للأقسام والعقود والمستأجرين" : "فواتير الإيجار والكهرباء جاهزة للطباعة"}</p></div>
           <div className="top-actions">
+            <button type="button" className="secondary maintenance-toggle no-print" aria-expanded={showMaintenance} onClick={async()=>{setShowMaintenance(v=>!v);try{const r=await fetch('/api/backup?list=1');if(r.ok)setBackups(await r.json());}catch{notify("تعذّر تحميل النسخ","error");}}}><Icon name="shield" /><span>النسخ الاحتياطية وسجل التعديلات</span></button>
             <span className={`save-state ${saving ? "saving" : ""}`}>{saving ? "جاري الحفظ…" : dirty ? "تعديلات غير محفوظة" : !connected ? "تعذّر تحديث البيانات" : "✓ البيانات محمّلة"}</span>
             <div className="notification-area">
-              <button type="button" className="icon-btn" aria-label="الإشعارات" aria-expanded={showNotifications} onClick={() => { setShowNotifications(value => !value); setNotificationsSeen(true); setShowProfileMenu(false); }}>♢{!notificationsSeen && <i />}</button>
+              <button type="button" className="icon-btn" aria-label="الإشعارات" aria-expanded={showNotifications} onClick={() => { setShowNotifications(value => !value); setNotificationsSeen(true); setShowProfileMenu(false); }}><Icon name="bell" />{!notificationsSeen && <i />}</button>
               {showNotifications && <section className="notification-panel" aria-label="إشعارات النظام"><header><strong>إشعارات النظام</strong><button type="button" aria-label="إغلاق الإشعارات" onClick={() => setShowNotifications(false)}>×</button></header><div className="notice-item"><span className="status-dot" /><div><strong>{connected ? "تم تحميل البيانات" : "تعذّر الاتصال"}</strong><small>{dirty ? "عندك تعديلات غير محفوظة" : "لا توجد تعديلات محلية"}</small></div></div><div className="notice-item"><span className={locked ? "notice-dot locked" : "notice-dot"} /><div><strong>{currentRecords.length === 0 ? "الشهر غير مُنشأ" : locked ? "الشهر معتمد" : "الشهر قيد التعديل"}</strong><small>{monthLabel(selectedMonth)} · {currentRecords.length} سجل</small></div></div><div className="notice-item"><span className="notice-dot invoice" /><div><strong>الفواتير</strong><small>{invoiceRows.length ? `${invoiceRows.length * 2} فاتورة جاهزة للمعاينة` : "تظهر بعد إنشاء سجل الشهر"}</small></div></div></section>}
             </div>
             <button type="button" className="mobile-logout" aria-label="تسجيل الخروج" onClick={() => void logout()}>خروج</button>
           </div>
         </header>
+        {showMaintenance&&<section className="panel maintenance-panel no-print" aria-labelledby="maintenance-title">
+          <div className="maintenance-head"><div><h2 id="maintenance-title">حماية البيانات</h2><p>نسخة تلقائية قبل كل تغيير، آخر 100 نسخة. نزّل نسخة خارج الموقع بشكل دوري.</p></div><button type="button" className="secondary" onClick={()=>{if(!dirty||window.confirm('إلغاء تعديلاتك غير المحفوظة وتحميل آخر نسخة؟'))void refresh();}}>إعادة تحميل البيانات</button></div>
+          <div className="maintenance-actions">
+            <a className="primary" href="/api/backup" download><Icon name="download" />تنزيل نسخة كاملة</a>
+            <label className={`secondary file-button ${saving||dirty ? "is-disabled" : ""}`}><Icon name="upload" />استرجاع ملف نسخة<input type="file" accept=".json" disabled={saving||dirty} onChange={e=>{const f=e.target.files?.[0];if(f)void restoreBackup(f);e.target.value='';}} /></label>
+          </div>
+          <details className="maintenance-list"><summary>النسخ التلقائية ({backups.length})</summary><ul>{backups.map(b=><li key={b.id}><a href={`/api/backup?id=${b.id}`} download><span className="mono">#{b.id}</span><span>{b.at} UTC</span></a></li>)}</ul></details>
+          <details className="maintenance-list"><summary>سجل التعديلات — آخر 200 عملية</summary><p className="maintenance-note">الدخول برمز مشترك؛ السجل يحدّد العملية والتوقيت، ولا يثبت هوية الشخص.</p>{audit.map(a=><details key={a.id} className="audit-entry"><summary><span className="audit-action">{a.action}</span><span>{a.at} UTC</span></summary><pre>{a.detail}</pre></details>)}</details>
+        </section>}
 
         {page === "audit" ? (
           <>
@@ -346,7 +370,7 @@ export default function Home() {
             </div>
 
             <section className="panel">
-              <div className="panel-head"><div><h2>سجل {monthLabel(selectedMonth)}</h2><p>{rows.length} من أصل {activeDepartments.length} قسم فعّال</p></div><div className="search"><span>⌕</span><input aria-label="بحث بالاسم أو القسم أو العداد" placeholder="بحث بالاسم، القسم أو العداد…" value={search} onChange={e => setSearch(e.target.value)} /></div></div>
+              <div className="panel-head"><div><h2>سجل {monthLabel(selectedMonth)}</h2><p>{rows.length} من أصل {activeDepartments.length} قسم فعّال{currentRecords.length > 0 && <span className={`month-chip ${locked ? "locked" : "open"}`}>{locked ? "معتمد ومقفل" : "قيد التعديل"}</span>}</p></div><div className="search"><Icon name="search" /><input aria-label="بحث بالاسم أو القسم أو العداد" placeholder="بحث بالاسم، القسم أو العداد…" value={search} onChange={e => setSearch(e.target.value)} /></div></div>
               {loading ? <div className="empty">جاري تحميل البيانات…</div> : currentRecords.length === 0 ? (
                 <div className="empty"><div className="empty-icon">＋</div><h3>لم يتم إنشاء سجل لهذا الشهر</h3><p>سيتم إضافة الأقسام الفعّالة ونقل العداد الحالي من الشهر السابق تلقائياً.</p><button type="button" className="primary" onClick={() => void createMonth()} disabled={saving}>إنشاء سجل {monthLabel(selectedMonth)}</button></div>
               ) : (
@@ -356,7 +380,7 @@ export default function Home() {
                     const subscription = difference * record.kiloPrice + record.meterFee;
                     const total = subscription + record.services + record.rent;
                     const hasPreviousMonth = records.some(candidate => candidate.departmentId === record.departmentId && candidate.month < record.month);
-                    return <tr key={record.id} className={difference < 0 ? "invalid" : ""}><td><strong>{department.meterSection}</strong><small>{department.category}</small></td><td>{department.occupant}</td><td className="mono">{department.occupantNumber}</td>{(["meterFee", "kiloPrice", "rent", "services", "previousReading", "currentReading"] as (keyof MonthlyRecord)[]).map(field => <td key={field}><input className="cell-input" aria-label={`${fieldLabel(field)} — ${department.meterSection}`} type="number" min="0" step="0.01" disabled={locked || saving || (editingId!==null && editingId!==record.id) || (field === "previousReading" && hasPreviousMonth)} value={record[field] as number} onChange={e => updateRecord(record.id, field, Number(e.target.value))}  /></td>)}<td className={difference < 0 ? "danger" : "mono strong"}>{difference}</td><td className="money">${money.format(subscription)}</td><td className="money total">${money.format(total)}</td><td><button type="button" disabled={saving || locked || (editingId!==null && editingId!==record.id)} onClick={() => void saveRecord(record)}>حفظ ومراجعة</button>{record.confirmed ? " ✓" : " بانتظار المراجعة"}</td></tr>;
+                    return <tr key={record.id} className={difference < 0 ? "invalid" : ""}><td><strong>{department.meterSection}</strong><small>{department.category}</small></td><td>{department.occupant}</td><td className="mono">{department.occupantNumber}</td>{recordFields.map(field => <td key={field}><input className="cell-input" aria-label={`${fieldLabel(field)} — ${department.meterSection}`} type="number" min="0" step="0.01" disabled={locked || saving || (editingId!==null && editingId!==record.id) || (field === "previousReading" && hasPreviousMonth)} value={rawInputs[`${record.id}:${field}`] ?? record[field]} onChange={e => updateRecord(record.id, field, e.target.value)}  /></td>)}<td className={difference < 0 ? "danger" : "mono strong"}>{difference}</td><td className="money">${money.format(subscription)}</td><td className="money total">${money.format(total)}</td><td><button type="button" disabled={saving || locked || (editingId!==null && editingId!==record.id)} onClick={() => void saveRecord(record)} className="row-save">حفظ ومراجعة</button><span className={`review-badge ${record.confirmed ? "done" : "pending"}`}>{record.confirmed ? "✓ تمت المراجعة" : "بانتظار المراجعة"}</span></td></tr>;
                   })}
                 </tbody><tfoot><tr><td colSpan={9}>المجموع الشهري</td><td>—</td><td>${money.format(totals.subscription)}</td><td>${money.format(totals.total)}</td></tr></tfoot></table></div>
               )}
@@ -411,6 +435,21 @@ export default function Home() {
   );
 }
 
+const iconPaths: Record<string, string> = {
+  audit: "M4 5h16v14H4zM4 10h16M9 10v9",
+  departments: "M3 21h18M5 21V8l7-4 7 4v13M9 21v-6h6v6",
+  invoices: "M7 3h10v18l-2.5-1.5L12 21l-2.5-1.5L7 21zM10 8h4M10 12h4",
+  shield: "M12 3l8 3v6c0 4.5-3.4 8.2-8 9-4.6-.8-8-4.5-8-9V6z",
+  bell: "M6 16V11a6 6 0 0 1 12 0v5l2 2H4zM10 20a2 2 0 0 0 4 0",
+  download: "M12 4v11M7 10l5 5 5-5M5 20h14",
+  upload: "M12 20V9M7 14l5-5 5 5M5 4h14",
+  lock: "M6 11h12v9H6zM9 11V8a3 3 0 0 1 6 0v3",
+  search: "M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14zM20 20l-4-4",
+};
+function Icon({ name }: { name: keyof typeof iconPaths }) {
+  return <svg className="icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={iconPaths[name]} /></svg>;
+}
+const recordFields: (keyof MonthlyRecord)[] = ["meterFee", "kiloPrice", "rent", "services", "previousReading", "currentReading"];
 function previousMonth(value: string, amount: number) { const [year, month] = value.split("-").map(Number); const date = new Date(year, month - 1 - amount, 1); return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`; }
 function fieldLabel(field: keyof MonthlyRecord) { return ({ meterFee: "رسم العداد", kiloPrice: "سعر الكيلو", rent: "قيمة الإيجار", services: "قيمة الخدمات", previousReading: "العداد السابق", currentReading: "العداد الحالي" } as Partial<Record<keyof MonthlyRecord, string>>)[field] ?? field; }
 function Stat({ label, value, accent, featured = false }: { label: string; value: number; accent: string; featured?: boolean }) { return <div className={`stat ${featured ? "featured" : ""}`}><div><p>{label}</p><strong><small>$</small>{money.format(value)}</strong><span className={accent}>●</span></div><small>{featured ? "المبلغ المطلوب تحصيله" : "لهذه الفترة"}</small></div>; }

@@ -25,7 +25,7 @@ The schema is created idempotently on the first database connection, or explicit
 | `DB_PASSWORD` | Database password |
 | `DB_SSL` | `true` if the database server requires TLS; otherwise `false` |
 | `DB_SSL_CA` | Optional CA certificate when using TLS |
-| `JMR_APP_PIN` | Your 4–8 digit PIN |
+| `JMR_APP_PIN` | Your 4–8 digit PIN (8 digits strongly recommended) |
 | `JMR_SESSION_SECRET` | Random secret, at least 32 characters |
 | `APP_ORIGIN` | Exact public HTTPS origin |
 
@@ -44,6 +44,10 @@ Business-data restore replaces departments and monthly records transactionally, 
 The app guards month locks, nonnegative consumption, calendar dates, stale browser revisions and authenticated writes. Save/review each record before approving, exporting or printing a month. MySQL writes run in one connection/transaction, and stale revisions are rejected before modifying data. Database-backed storage survives app rebuilds.
 
 Before each app mutation, a snapshot is stored in the same database; the last 100 snapshots are retained during ordinary mutations. These snapshots protect against editing mistakes, not database loss. Download off-site backups regularly and enable hosting/database backups. Shared PIN access records action/time rather than individual identity. Changing PIN or session secret invalidates prior signed sessions.
+
+Sign-in is limited to 5 wrong PINs per address and 20 wrong PINs in total per 15 minutes. The total limit exists because client IP headers can be forged; the trade-off is that a flood of wrong guesses can also make the real owner wait up to 15 minutes. Use an 8-digit PIN so the total limit keeps guessing impractical. Logging out removes the session cookie from the browser; to cut off a session copied from another device, change the PIN or session secret.
+
+Months can be created up to the month after the current one (Asia/Beirut). Months are created in order, so the app asks for confirmation before skipping months.
 
 ## Local verification
 

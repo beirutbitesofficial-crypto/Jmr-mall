@@ -2,10 +2,9 @@ import {
   clearFailedLogins,
   createSessionCookie,
   getAuthConfig,
-  getLoginRateLimit,
   isCorrectPin,
   jsonNoStore,
-  recordFailedLogin,
+  reserveLoginAttempt,
 } from "@/lib/pin-auth";
 
 export const dynamic = "force-dynamic";
@@ -30,7 +29,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const rateLimit = await getLoginRateLimit(request, config.secret);
+    const rateLimit = await reserveLoginAttempt(request, config.secret);
     if (rateLimit.limited) {
       return jsonNoStore(
         { error: "RATE_LIMITED", retryAfter: rateLimit.retryAfter },
@@ -39,7 +38,6 @@ export async function POST(request: Request) {
     }
 
     if (!(await isCorrectPin(pin, config.pin))) {
-      await recordFailedLogin(request, config.secret);
       return jsonNoStore({ error: "INVALID_PIN" }, { status: 401 });
     }
 
