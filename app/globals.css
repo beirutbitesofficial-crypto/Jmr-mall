@@ -276,3 +276,35 @@ td .primary,td .secondary,td .danger-button { min-height:34px; padding:0 12px; f
 .import-search { display:flex; gap:10px; flex-wrap:wrap; }
 .import-search .search-input { flex:1 1 280px; }
 @media (max-width:560px) { .import-shell { padding:16px; } .import-section { padding:16px; } .import-actions>*,.import-search>* { flex:1; } }
+
+/* ---------- Monthly sheet: same columns as the Excel "Page 2" ---------- */
+.sheet { min-width:1080px; }
+.sheet th,.sheet td { padding:8px 5px; }
+.sheet td.num { direction:ltr; text-align:right; white-space:nowrap; }
+.sheet td.strong { font-weight:700; }
+.sheet td.total { color:var(--green); font-weight:700; }
+.sheet td.danger { color:var(--red); font-weight:700; }
+.sheet tr.invalid td { background:var(--red-soft); }
+.sheet tr.row-dirty td { background:#fffdf5; }
+.sheet .cell-input { width:68px; height:36px; border:1px solid var(--line); background:#fff; border-radius:6px; padding:0 8px; font-size:14px; direction:ltr; text-align:right; font-variant-numeric:tabular-nums; transition:border-color .15s,box-shadow .15s; }
+.sheet .cell-input:hover { border-color:#d0d5dd; }
+.sheet .cell-input:focus { outline:0; border-color:var(--navy); box-shadow:0 0 0 3px #14213d1f; }
+.sheet .status-cell { white-space:nowrap; }
+.sheet .status-stack { display:flex; flex-direction:column; align-items:flex-start; gap:4px; }
+.sheet .status-cell .primary,.sheet .status-cell .secondary { min-height:30px; padding:0 12px; }
+.sheet tfoot td { background:var(--surface-2); font-weight:700; border-top:1px solid var(--line); padding:12px 10px; }
+/* Shop, investor name and number stay in view while the numbers scroll sideways. */
+.sheet .pin { position:sticky; z-index:2; background:var(--surface); }
+.sheet thead .pin { z-index:3; background:var(--surface-2); }
+.sheet tfoot .pin { background:var(--surface-2); }
+.sheet tr.row-dirty .pin { background:#fffdf5; }
+.sheet tr.invalid .pin { background:var(--red-soft); }
+.sheet .pin-1 { right:0; width:92px; min-width:92px; padding-right:14px!important; }
+.sheet .pin-2 { right:92px; width:130px; min-width:130px; }
+.sheet .pin-3 { right:222px; width:100px; min-width:100px; box-shadow:-6px 0 8px -6px #10182826; }
+@media (max-width:760px) {
+  /* On phones only the shop column stays pinned, so there is room for the numbers. */
+  .sheet .pin-2,.sheet .pin-3 { position:static; box-shadow:none; }
+  .sheet .pin-1 { box-shadow:-6px 0 8px -6px #10182826; }
+}
+@media print { .sheet .pin { position:static; box-shadow:none; } .sheet { min-width:0!important; } }

@@ -66,7 +66,8 @@ export default function Home() {
   const [stale, setStale] = useState(false);
   const [toast, setToast] = useState<Toast>(null);
   const [departmentEdit, setDepartmentEdit] = useState<{ id?: number; draft: DepartmentDraft } | null>(null);
-  const [recordEdit, setRecordEdit] = useState<{ record: MonthlyRecord; draft: RecordDraft } | null>(null);
+  // Typed-but-unsaved values per record, kept as text so a cleared cell stays empty.
+  const [rowDrafts, setRowDrafts] = useState<Record<number, Partial<Record<keyof RecordDraft, string>>>>({});
   const [paymentEdit, setPaymentEdit] = useState<PaymentDraft | null>(null);
   const [voidEdit, setVoidEdit] = useState<{ id: string; reason: string } | null>(null);
   const [userEdit, setUserEdit] = useState<UserDraft | null>(null);
@@ -142,7 +143,15 @@ export default function Home() {
   const visibleRecords = currentRecords.filter(record => `${record.meterSection} ${record.occupant} ${record.occupantNumber}`.toLowerCase().includes(search.toLowerCase()));
   const owner = data?.actor.role === "owner";
   const writer = data?.actor.role !== "viewer";
-  const formOpen = Boolean(departmentEdit || recordEdit || paymentEdit || voidEdit || userEdit);
+  const formOpen = Boolean(departmentEdit || paymentEdit || voidEdit || userEdit);
+  const hasDrafts = Object.keys(rowDrafts).length > 0;
+  useEffect(() => {
+    if (!hasDrafts) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [hasDrafts]);
+  const editableMonth = Boolean(writer && selectedStatus && !locked && data && !data.bootstrap && data.months[0]?.month === month);
   const disabled = busy || stale || formOpen;
 
   const totals = complete.reduce((sum, record) => {
@@ -190,13 +199,26 @@ export default function Home() {
     });
   }
 
-  async function saveRecord(event: React.FormEvent) {
-    event.preventDefault();
-    if (!recordEdit) return;
-    if (!Object.values(recordEdit.draft).every(value => Number.isFinite(value) && value >= 0)) { notify("عبّي كل الخانات بأرقام صحيحة قبل الحفظ", "error"); return; }
+  function draftValues(record: MonthlyRecord): RecordDraft {
+    const draft = rowDrafts[record.id] ?? {};
+    const value = (field: keyof RecordDraft) => {
+      const raw = draft[field];
+      return raw === undefined ? Number(record[field]) : raw.trim() === "" ? Number.NaN : Number(raw);
+    };
+    return { meterFee: value("meterFee"), kiloPrice: value("kiloPrice"), rent: value("rent"), services: value("services"), previousReading: value("previousReading"), currentReading: value("currentReading") };
+  }
+
+  function editCell(record: MonthlyRecord, field: keyof RecordDraft, raw: string) {
+    setRowDrafts(old => ({ ...old, [record.id]: { ...old[record.id], [field]: raw } }));
+  }
+
+  async function saveRecord(record: MonthlyRecord) {
+    const recordEdit = { record, draft: draftValues(record) };
+    if (!Object.values(recordEdit.draft).every(value => Number.isFinite(value) && value >= 0)) { notify(`عبّي كل خانات ${record.meterSection} بأرقام صحيحة قبل الحفظ`, "error"); return; }
+    if (recordEdit.draft.currentReading < recordEdit.draft.previousReading) { notify(`العداد الحالي لـ ${record.meterSection} أقل من العداد السابق`, "error"); return; }
     await run(async () => {
       const result = await action({ action: "updateRecord", id: recordEdit.record.id, expectedRevision: recordEdit.record.revision, record: recordEdit.draft });
-      setRecordEdit(null);
+      setRowDrafts(old => { const next = { ...old }; delete next[record.id]; return next; });
       notify(String(result.message ?? "تم الحفظ"));
     });
   }
@@ -257,13 +279,6 @@ export default function Home() {
     } });
   }
 
-  function startRecord(record: MonthlyRecord) {
-    setRecordEdit({ record, draft: {
-      meterFee: record.meterFee, kiloPrice: record.kiloPrice, rent: record.rent, services: record.services,
-      previousReading: record.previousReading, currentReading: record.currentReading,
-    } });
-  }
-
   function printReceipt(payment: Payment) {
     setReceipt(payment);
     // Leave receipt mode once printing ends; otherwise the next "print invoices" prints this receipt.
@@ -296,21 +311,21 @@ export default function Home() {
     <main className={`app-shell page-${page} ${receipt ? "printing-receipt" : ""}`} dir="rtl">
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark">J</span><div><strong>BY JMR</strong><small>MALL AUDIT SYSTEM</small></div></div>
-        <nav>{navPages.map(item => <button key={item} type="button" className={`nav-${item} ${page === item ? "active" : ""}`} aria-current={page === item ? "page" : undefined} disabled={formOpen || busy} onClick={() => { setPage(item); setSearch(""); }}><Icon name={item} /><span className="nav-label">{pageNames[item]}</span></button>)}<a className="nav-import" href="/import"><Icon name="import" /><span className="nav-label">استيراد Excel</span></a></nav>
+        <nav>{navPages.map(item => <button key={item} type="button" className={`nav-${item} ${page === item ? "active" : ""}`} aria-current={page === item ? "page" : undefined} disabled={formOpen || busy || hasDrafts} onClick={() => { setPage(item); setSearch(""); }}><Icon name={item} /><span className="nav-label">{pageNames[item]}</span></button>)}<a className="nav-import" href="/import"><Icon name="import" /><span className="nav-label">استيراد Excel</span></a></nav>
         <div className="side-note"><strong>{data.actor.name}</strong><small>{roleLabel(data.actor.role)}</small><button className="secondary" disabled={busy || formOpen} onClick={() => void logout()}>تسجيل الخروج</button></div>
       </aside>
 
       <section className="workspace">
         <header className="topbar">
           <div><p className="eyebrow">BY JMR MALL</p><h1>{pageNames[page]}</h1><p>أرقام ثابتة، صلاحيات واضحة، وسجل كامل لكل تعديل.</p></div>
-          <div className="top-actions"><span className={`save-state ${stale ? "error-text" : ""}`}>{busy ? "جاري تنفيذ الطلب…" : stale ? "العرض يحتاج تحديث قبل أي تعديل" : "✓ البيانات متزامنة"}</span><button className="secondary" disabled={busy || formOpen} onClick={() => void run(async () => { await refresh(); notify("تم تحديث البيانات"); })}>تحديث</button></div>
+          <div className="top-actions"><span className={`save-state ${stale ? "error-text" : ""}`}>{busy ? "جاري تنفيذ الطلب…" : stale ? "العرض يحتاج تحديث قبل أي تعديل" : "✓ البيانات متزامنة"}</span><button className="secondary" disabled={busy || formOpen} onClick={() => { if (hasDrafts && !window.confirm("عندك أرقام مش محفوظة. التحديث بيلغيها. متابعة؟")) return; setRowDrafts({}); void run(async () => { await refresh(); notify("تم تحديث البيانات"); }); }}>تحديث</button></div>
         </header>
 
         {data.bootstrap && <div className="notice-banner"><strong>إعداد أول مرة:</strong> أنشئ حساب مالك قوي. بعده حساب الإعداد بيتوقف تلقائياً.<button className="primary" disabled={busy || formOpen} onClick={() => { setPage("users"); setUserEdit({ username: "", name: "", role: "owner", active: 1, password: "" }); }}>إنشاء حساب المالك</button></div>}
         {stale && <div className="notice-banner error">توقّف التعديل مؤقتاً. اضغط تحديث وتأكد من الأرقام قبل المتابعة.</div>}
 
         {(page === "audit" || page === "invoices" || page === "payments") && <div className="toolbar">
-          <label className="month-picker">الشهر<input type="month" value={month} min="2000-01" max="2099-12" disabled={busy || formOpen} onChange={event => event.target.value && setMonth(event.target.value)} /></label>
+          <label className="month-picker">الشهر<input type="month" value={month} min="2000-01" max="2099-12" disabled={busy || formOpen || hasDrafts} onChange={event => event.target.value && setMonth(event.target.value)} /></label>
           <div className="toolbar-actions"><span className={`status-pill ${locked ? "approved" : ""}`}>{selectedStatus ? locked ? "معتمد" : "مسودة" : "غير مُنشأ"}</span>{invoicesReady && <button className="secondary" disabled={disabled} onClick={() => void downloadExcel()}>تحميل Excel</button>}</div>
         </div>}
 
@@ -322,11 +337,37 @@ export default function Home() {
         </div>}
 
         {page === "audit" && <section className="panel">
-          <div className="panel-head"><div><h2>{monthLabel(month)}</h2><p>{complete.length} / {currentRecords.length} سجل مكتمل</p></div><div className="toolbar-actions"><input className="search-input" aria-label="بحث" placeholder="بحث بالقسم أو المستثمر…" value={search} onChange={event => setSearch(event.target.value)} />{owner && selectedStatus && <button className="primary" disabled={disabled || data.bootstrap} onClick={() => { if (locked && !window.confirm(`إعادة فتح ${monthLabel(month)} بتسمح بتعديل أرقام شهر معتمد. متابعة؟`)) return; void run(async () => { const result = await action({ action: "lockMonth", month, locked: locked ? 0 : 1 }); notify(String(result.message ?? "تم")); }); }}>{locked ? "إعادة فتح الشهر" : "اعتماد الشهر"}</button>}</div></div>
-          {!selectedStatus ? <div className="empty"><h3>الشهر غير مُنشأ</h3><p>الشهر الجديد بياخد القراءة النهائية من الشهر المعتمد السابق، لكن بيضل غير مكتمل لحد ما تراجع وتحفظ كل سجل.</p>{writer && <button className="primary" disabled={disabled || data.bootstrap} onClick={() => void run(async () => { const result = await action({ action: "createMonth", month }); notify(String(result.message ?? "تم إنشاء الشهر")); })}>إنشاء الشهر</button>}</div> : <div className="table-wrap"><table><thead><tr><th>القسم / المستثمر</th><th>السابقة</th><th>الحالية</th><th>الاستهلاك</th><th>الإيجار والخدمات</th><th>الكهرباء</th><th>المجموع</th><th>الحالة</th><th>إجراء</th></tr></thead><tbody>{visibleRecords.map(record => {
-            const charges = recordCharges(record);
-            return <tr key={record.id}><td><strong>{record.meterSection}</strong><small>{record.occupant}</small></td><td>{record.previousReading}</td><td>{record.currentReading}</td><td>{charges.usage}</td><td>{currency.format(charges.rent)}</td><td>{currency.format(charges.electricity)}</td><td>{currency.format(charges.total)}</td><td><span className={`badge ${isRecordReady(record) ? "done" : "pending"}`}>{isRecordReady(record) ? "مكتمل" : "يحتاج مراجعة"}</span></td><td>{writer && !locked && <button className="secondary" disabled={disabled || data.bootstrap} onClick={() => startRecord(record)}>مراجعة وحفظ</button>}</td></tr>;
-          })}</tbody></table></div>}
+          <div className="panel-head"><div><h2>{monthLabel(month)}</h2><p>{complete.length} / {currentRecords.length} سجل مكتمل</p></div><div className="toolbar-actions"><input className="search-input" aria-label="بحث" placeholder="بحث بالقسم أو المستثمر…" value={search} onChange={event => setSearch(event.target.value)} />{owner && selectedStatus && <button className="primary" disabled={disabled || data.bootstrap || hasDrafts} title={hasDrafts ? "احفظ الأرقام المعدّلة أولاً" : undefined} onClick={() => { if (locked && !window.confirm(`إعادة فتح ${monthLabel(month)} بتسمح بتعديل أرقام شهر معتمد. متابعة؟`)) return; void run(async () => { const result = await action({ action: "lockMonth", month, locked: locked ? 0 : 1 }); notify(String(result.message ?? "تم")); }); }}>{locked ? "إعادة فتح الشهر" : "اعتماد الشهر"}</button>}</div></div>
+          {!selectedStatus ? <div className="empty"><h3>الشهر غير مُنشأ</h3><p>الشهر الجديد بياخد القراءة النهائية من الشهر المعتمد السابق، لكن بيضل غير مكتمل لحد ما تراجع وتحفظ كل سجل.</p>{writer && <button className="primary" disabled={disabled || data.bootstrap} onClick={() => void run(async () => { const result = await action({ action: "createMonth", month }); notify(String(result.message ?? "تم إنشاء الشهر")); })}>إنشاء الشهر</button>}</div> : <div className="table-wrap sheet-wrap"><table className="sheet"><thead><tr>
+            <th className="pin pin-1">عداد / قسم</th><th className="pin pin-2">اسم المستثمر</th><th className="pin pin-3">رقم المستثمر</th>
+            <th>رسم العداد</th><th>سعر الكيلو</th><th>قيمة الإيجار</th><th>قيمة الخدمات</th><th>العداد السابق</th><th>العداد الحالي</th>
+            <th>صرف العداد</th><th>قيمة الاشتراك</th><th>المجموع</th><th>الحالة</th>
+          </tr></thead><tbody>{visibleRecords.map(record => {
+            const values = draftValues(record);
+            const known = Object.values(values).every(Number.isFinite);
+            const usage = values.currentReading - values.previousReading;
+            const subscription = roundedMoney(usage * values.kiloPrice + values.meterFee);
+            const total = roundedMoney(subscription + values.rent + values.services);
+            const dirty = Boolean(rowDrafts[record.id]);
+            const hasPrior = data.records.some(item => item.departmentId === record.departmentId && item.month < record.month);
+            const cell = (field: keyof RecordDraft, step = "0.01") => {
+              const editable = editableMonth && !(field === "previousReading" && hasPrior);
+              if (!editable) return <td className="num">{field === "meterFee" || field === "kiloPrice" || field === "rent" || field === "services" ? currency.format(Number(record[field])) : Number(record[field])}</td>;
+              return <td><input className="cell-input" type="number" inputMode="decimal" min="0" step={step} disabled={busy || stale} aria-label={`${sheetLabels[field]} — ${record.meterSection}`} value={rowDrafts[record.id]?.[field] ?? String(record[field])} onChange={event => editCell(record, field, event.target.value)} /></td>;
+            };
+            return <tr key={record.id} className={`${dirty ? "row-dirty" : ""} ${known && usage < 0 ? "invalid" : ""}`}>
+              <td className="pin pin-1"><strong>{record.meterSection}</strong><small>{record.category}</small></td>
+              <td className="pin pin-2">{record.occupant}</td>
+              <td className="pin pin-3 num">{record.occupantNumber || "—"}</td>
+              {cell("meterFee")}{cell("kiloPrice", "0.0001")}{cell("rent")}{cell("services")}{cell("previousReading")}{cell("currentReading")}
+              <td className={`num ${known && usage < 0 ? "danger" : "strong"}`}>{known ? usage : "—"}</td>
+              <td className="num">{known ? currency.format(subscription) : "—"}</td>
+              <td className="num total">{known ? currency.format(total) : "—"}</td>
+              <td className="status-cell"><div className="status-stack">{editableMonth && (dirty || !isRecordReady(record)) && <button className={dirty ? "primary" : "secondary"} disabled={busy || stale} onClick={() => void saveRecord(record)}>{dirty ? "حفظ" : "تأكيد"}</button>}<span className={`badge ${dirty ? "pending" : isRecordReady(record) ? "done" : "pending"}`}>{dirty ? "غير محفوظ" : isRecordReady(record) ? "مكتمل" : "يحتاج مراجعة"}</span></div></td>
+            </tr>;
+          })}</tbody><tfoot><tr><td className="pin pin-1" colSpan={3}>المجموع الشهري</td><td colSpan={6}></td><td>—</td>
+            <td className="num">{currency.format(visibleRecords.reduce((sum, record) => { const v = draftValues(record); const u = v.currentReading - v.previousReading; return sum + (Object.values(v).every(Number.isFinite) ? roundedMoney(u * v.kiloPrice + v.meterFee) : 0); }, 0))}</td>
+            <td className="num total">{currency.format(visibleRecords.reduce((sum, record) => { const v = draftValues(record); const u = v.currentReading - v.previousReading; return sum + (Object.values(v).every(Number.isFinite) ? roundedMoney(u * v.kiloPrice + v.meterFee + v.rent + v.services) : 0); }, 0))}</td><td></td></tr></tfoot></table></div>}
           {selectedStatus && !locked && missingDepartments.length > 0 && <div className="panel-footer"><strong>أقسام فعّالة مش موجودة بهالشهر:</strong>{missingDepartments.map(department => <button key={department.id} className="secondary" disabled={disabled || data.bootstrap} onClick={() => void run(async () => { const result = await action({ action: "addToMonth", month, departmentId: department.id }); notify(String(result.message ?? "تمت الإضافة")); })}>إضافة {department.meterSection}</button>)}</div>}
         </section>}
 
@@ -369,15 +410,6 @@ export default function Home() {
         <Field label="تاريخ انتهاء الإيجار" type="date" value={departmentEdit.draft.rentEnd} onChange={value => setDepartmentEdit({ ...departmentEdit, draft: { ...departmentEdit.draft, rentEnd: value } })} />
       </div><label className="check-field"><input type="checkbox" checked={departmentEdit.draft.active === 1} onChange={event => setDepartmentEdit({ ...departmentEdit, draft: { ...departmentEdit.draft, active: event.target.checked ? 1 : 0 } })} />قسم فعّال</label><SaveButton busy={busy} /></form></Modal>}
 
-      {recordEdit && <Modal title={`${recordEdit.record.meterSection} — ${monthLabel(recordEdit.record.month)}`} busy={busy} onClose={() => setRecordEdit(null)}><form onSubmit={saveRecord}><p>الحفظ بيأكد اكتمال السجل. القراءة السابقة بتتحدد من الشهر السابق على السيرفر.</p><div className="form-grid">
-        <NumberField label="رسم العداد ($)" value={recordEdit.draft.meterFee} onChange={value => setRecordEdit({ ...recordEdit, draft: { ...recordEdit.draft, meterFee: value } })} />
-        <NumberField label="سعر الكيلو ($)" value={recordEdit.draft.kiloPrice} step="0.0001" onChange={value => setRecordEdit({ ...recordEdit, draft: { ...recordEdit.draft, kiloPrice: value } })} />
-        <NumberField label="قيمة الإيجار ($)" value={recordEdit.draft.rent} onChange={value => setRecordEdit({ ...recordEdit, draft: { ...recordEdit.draft, rent: value } })} />
-        <NumberField label="قيمة الخدمات ($)" value={recordEdit.draft.services} onChange={value => setRecordEdit({ ...recordEdit, draft: { ...recordEdit.draft, services: value } })} />
-        <NumberField label="العداد السابق" value={recordEdit.draft.previousReading} disabled={data.records.some(item => item.departmentId === recordEdit.record.departmentId && item.month < recordEdit.record.month)} onChange={value => setRecordEdit({ ...recordEdit, draft: { ...recordEdit.draft, previousReading: value } })} />
-        <NumberField label="العداد الحالي" value={recordEdit.draft.currentReading} onChange={value => setRecordEdit({ ...recordEdit, draft: { ...recordEdit.draft, currentReading: value } })} />
-      </div><SaveButton busy={busy} /></form></Modal>}
-
       {paymentEdit && <Modal title="تسجيل دفعة" busy={busy} onClose={() => setPaymentEdit(null)}><form onSubmit={savePayment}><Field label="المبلغ بالدولار" type="number" value={paymentEdit.amount} onChange={value => setPaymentEdit({ ...paymentEdit, amount: value })} required min="0.01" step="0.01" /><Field label="تاريخ الدفع" type="date" value={paymentEdit.paidAt} onChange={value => setPaymentEdit({ ...paymentEdit, paidAt: value })} required /><Field label="ملاحظة" value={paymentEdit.note} onChange={value => setPaymentEdit({ ...paymentEdit, note: value })} /><p>حتى لو انقطع الاتصال وأعدت نفس الطلب، معرّف الدفعة بيمنع تسجيلها مرتين.</p><SaveButton busy={busy} /></form></Modal>}
 
       {voidEdit && <Modal title="عكس إيصال" busy={busy} onClose={() => setVoidEdit(null)}><form onSubmit={event => { event.preventDefault(); void run(async () => { const result = await action({ action: "voidPayment", id: voidEdit.id, reason: voidEdit.reason }); setVoidEdit(null); notify(String(result.message ?? "تم العكس")); }); }}><p>الإيصال ما بينحذف. بيضل بالأرشيف مع سبب العكس واسم المستخدم.</p><Field label="سبب العكس" value={voidEdit.reason} onChange={value => setVoidEdit({ ...voidEdit, reason: value })} required /><SaveButton busy={busy} /></form></Modal>}
@@ -405,11 +437,9 @@ function Icon({ name }: { name: string }) {
 function Field({ label, value, onChange, type = "text", required = false, ...rest }: { label: string; value: string; onChange: (value: string) => void; type?: string; required?: boolean; min?: string; step?: string; autoComplete?: string }) {
   return <label className="field"><span>{label}</span><input type={type} value={value} onChange={event => onChange(event.target.value)} required={required} {...rest} /></label>;
 }
-function NumberField({ label, value, onChange, step = "0.01", disabled = false }: { label: string; value: number; onChange: (value: number) => void; step?: string; disabled?: boolean }) {
-  // Keep the typed text so a cleared box stays empty (and required) instead of silently becoming 0.
-  const [text, setText] = useState(String(value));
-  return <label className="field"><span>{label}</span><input type="number" min="0" step={step} value={text} disabled={disabled} onChange={event => { setText(event.target.value); onChange(event.target.value.trim() === "" ? Number.NaN : Number(event.target.value)); }} required /></label>;
-}
+const sheetLabels: Record<keyof RecordDraft, string> = {
+  meterFee: "رسم العداد", kiloPrice: "سعر الكيلو", rent: "قيمة الإيجار", services: "قيمة الخدمات", previousReading: "العداد السابق", currentReading: "العداد الحالي",
+};
 function SaveButton({ busy }: { busy: boolean }) { return <button className="primary form-save" disabled={busy}>{busy ? "جاري الحفظ…" : "حفظ وتأكيد"}</button>; }
 function Stat({ label, value }: { label: string; value: number }) { return <div className="stat"><p>{label}</p><strong>{currency.format(value)}</strong></div>; }
 function ToastView({ toast }: { toast: NonNullable<Toast> }) { return <div className={`toast ${toast.tone}`} role={toast.tone === "error" ? "alert" : "status"}>{toast.tone === "error" ? "!" : "✓"} {toast.message}</div>; }
