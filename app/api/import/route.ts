@@ -1,7 +1,7 @@
 import * as XLSX from "xlsx";
 import { failure, jsonNoStore, requireSession, sameOrigin } from "@/lib/auth";
-import { getDb, initDatabase } from "@/lib/jmr-db";
-import { JmrError } from "@/lib/jmr-core";
+import { getDb, initDatabase, transaction, type D1Database } from "@/lib/jmr-db";
+import { assertJmr, JmrError, nextMonth, validDate } from "@/lib/jmr-core";
 
 export const dynamic = "force-dynamic";
 
@@ -105,19 +105,31 @@ function numberValue(value: unknown): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+// Readings and amounts are never negative; a negative cell is left out and reported.
+function nonNegative(value: number | undefined, label: string, where: string, warnings: string[]): number | undefined {
+  if (value === undefined || value >= 0) return value;
+  warnings.push(`${where}: تم تجاهل ${label} السالب (${value}).`);
+  return undefined;
+}
+
 function dateValue(value: unknown): string | undefined {
-  if (value instanceof Date && !Number.isNaN(value.valueOf())) return value.toISOString().slice(0, 10);
+  if (value instanceof Date && !Number.isNaN(value.valueOf())) return checkedDate(value.toISOString().slice(0, 10));
   if (typeof value === "number" && Number.isFinite(value)) {
     const parsed = XLSX.SSF.parse_date_code(value);
-    if (parsed) return `${parsed.y}-${String(parsed.m).padStart(2, "0")}-${String(parsed.d).padStart(2, "0")}`;
+    if (parsed) return checkedDate(`${parsed.y}-${String(parsed.m).padStart(2, "0")}-${String(parsed.d).padStart(2, "0")}`);
   }
   const text = normalizeArabicDigits(String(value ?? "")).trim();
   if (!text) return undefined;
   const direct = text.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
-  if (direct) return `${direct[1]}-${direct[2].padStart(2, "0")}-${direct[3].padStart(2, "0")}`;
+  if (direct) return checkedDate(`${direct[1]}-${direct[2].padStart(2, "0")}-${direct[3].padStart(2, "0")}`);
   const reverse = text.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
-  if (reverse) return `${reverse[3]}-${reverse[2].padStart(2, "0")}-${reverse[1].padStart(2, "0")}`;
+  if (reverse) return checkedDate(`${reverse[3]}-${reverse[2].padStart(2, "0")}-${reverse[1].padStart(2, "0")}`);
   return undefined;
+}
+
+// An impossible date such as 2026-02-31 is dropped instead of being saved as a contract date.
+function checkedDate(value: string): string | undefined {
+  return validDate(value) ? value : undefined;
 }
 
 function parseWorkbook(buffer: ArrayBuffer, requestedSheet?: string): { rows: ParsedRow[]; sheets: string[]; warnings: string[] } {
@@ -157,6 +169,7 @@ function parseWorkbook(buffer: ArrayBuffer, requestedSheet?: string): { rows: Pa
       for (const [columnIndex, key] of mapping.entries()) object[key] = source[columnIndex];
       const meterSection = textValue(object.meterSection);
       if (!meterSection) continue;
+      const where = `${sheetName} / ${rowIndex + 1}`;
       const row: ParsedRow = {
         sourceSheet: sheetName,
         sourceRow: rowIndex + 1,
@@ -168,12 +181,12 @@ function parseWorkbook(buffer: ArrayBuffer, requestedSheet?: string): { rows: Pa
         occupantNumber: textValue(object.occupantNumber),
         rentStart: dateValue(object.rentStart),
         rentEnd: dateValue(object.rentEnd),
-        previousReading: numberValue(object.previousReading),
-        currentReading: numberValue(object.currentReading),
-        kiloPrice: numberValue(object.kiloPrice),
-        meterFee: numberValue(object.meterFee),
-        rent: numberValue(object.rent),
-        services: numberValue(object.services),
+        previousReading: nonNegative(numberValue(object.previousReading), "العداد السابق", where, warnings),
+        currentReading: nonNegative(numberValue(object.currentReading), "العداد الحالي", where, warnings),
+        kiloPrice: nonNegative(numberValue(object.kiloPrice), "سعر الكيلو", where, warnings),
+        meterFee: nonNegative(numberValue(object.meterFee), "رسم العداد", where, warnings),
+        rent: nonNegative(numberValue(object.rent), "الإيجار", where, warnings),
+        services: nonNegative(numberValue(object.services), "الخدمات", where, warnings),
         score: mapping.size,
       };
       candidates.push(row);
@@ -200,8 +213,8 @@ function normalizeMatch(value: string): string {
   return normalizeHeader(value).replace(/\s+/g, "");
 }
 
-async function getDepartments(): Promise<DepartmentRow[]> {
-  const result = await getDb().prepare(`SELECT id, meter_section AS meterSection, category, owner, phone, occupant,
+async function getDepartments(db: D1Database = getDb()): Promise<DepartmentRow[]> {
+  const result = await db.prepare(`SELECT id, meter_section AS meterSection, category, owner, phone, occupant,
     occupant_number AS occupantNumber, rent_start AS rentStart, rent_end AS rentEnd, active
     FROM departments ORDER BY meter_section`).all<DepartmentRow>();
   return result.results;
@@ -250,19 +263,50 @@ async function buildPreview(rows: ParsedRow[], month: string, createMissing: boo
   return preview;
 }
 
-async function ensureMonth(month: string): Promise<void> {
-  const db = getDb();
-  await db.prepare("INSERT OR IGNORE INTO month_status (month, locked) VALUES (?, 0)").bind(month).run();
-  const status = await db.prepare("SELECT locked FROM month_status WHERE month=?").bind(month).first<{ locked: number }>();
-  if (Number(status?.locked ?? 0) === 1) throw new JmrError("هالشهر معتمد. أعد فتحه قبل الاستيراد.", 409);
+// Import follows the same month rules as the app: only the latest open month can change,
+// a new month must directly follow an approved one, and only one month is ever open.
+// Otherwise an import could open a second month that could then never be approved.
+async function ensureMonth(db: D1Database, month: string): Promise<void> {
+  await db.prepare("LOCK TABLE month_status IN SHARE ROW EXCLUSIVE MODE").run();
+  const latest = await db.prepare("SELECT month, locked FROM month_status ORDER BY month DESC LIMIT 1").first<{ month: string; locked: number }>();
+  if (latest?.month === month) {
+    if (Number(latest.locked) === 1) throw new JmrError("هالشهر معتمد. أعد فتحه قبل الاستيراد.", 409);
+    return;
+  }
+  if (latest) {
+    const existing = await db.prepare("SELECT month FROM month_status WHERE month=?").bind(month).first();
+    if (existing) throw new JmrError(`الاستيراد متاح لآخر شهر (${latest.month}) فقط. الأشهر السابقة أرشيف ثابت.`, 409);
+    if (Number(latest.locked) !== 1) throw new JmrError(`اعتمد شهر ${latest.month} قبل استيراد شهر جديد`, 409);
+    if (month !== nextMonth(latest.month)) throw new JmrError(`الشهر التالي لازم يكون ${nextMonth(latest.month)}`, 409);
+  } else if (month > nextMonth(beirutMonth())) {
+    throw new JmrError("ما فيك تستورد شهر بعد الشهر الجاي", 400);
+  }
+  // A new month starts like "إنشاء الشهر": every active department carries its last reading forward.
+  await db.batch([
+    db.prepare("INSERT INTO month_status (month, locked) VALUES (?, 0)").bind(month),
+    db.prepare(`INSERT INTO monthly_records (month, department_id, previous_reading, current_reading, locked)
+      SELECT ?, d.id,
+        COALESCE((SELECT current_reading FROM monthly_records WHERE department_id=d.id AND month<? ORDER BY month DESC LIMIT 1),0),
+        COALESCE((SELECT current_reading FROM monthly_records WHERE department_id=d.id AND month<? ORDER BY month DESC LIMIT 1),0), 0
+      FROM departments d WHERE d.active=1`).bind(month, month, month),
+    db.prepare(`INSERT OR IGNORE INTO record_meta (record_id, confirmed, revision)
+      SELECT id, 0, 1 FROM monthly_records WHERE month = ?`).bind(month),
+    db.prepare(`INSERT OR IGNORE INTO monthly_snapshots (record_id, meter_section, category, owner, phone, occupant, occupant_number, rent_start, rent_end)
+      SELECT r.id,d.meter_section,d.category,d.owner,d.phone,d.occupant,d.occupant_number,d.rent_start,d.rent_end
+      FROM monthly_records r JOIN departments d ON d.id=r.department_id WHERE r.month=?`).bind(month),
+  ]);
 }
 
-async function commitRows(rows: ParsedRow[], month: string, createMissing: boolean, updateMaster: boolean, actorName: string, actorId: string) {
-  const db = getDb();
-  await ensureMonth(month);
-  let departments = await getDepartments();
-  let bySection = new Map(departments.map(item => [normalizeMatch(item.meterSection), item]));
-  let byOccupantNumber = new Map(departments.filter(item => item.occupantNumber).map(item => [normalizeMatch(item.occupantNumber), item]));
+function beirutMonth(): string {
+  const parts = new Intl.DateTimeFormat("en", { timeZone: "Asia/Beirut", year: "numeric", month: "2-digit" }).formatToParts(new Date());
+  return `${parts.find(part => part.type === "year")?.value}-${parts.find(part => part.type === "month")?.value}`;
+}
+
+async function commitRows(db: D1Database, rows: ParsedRow[], month: string, createMissing: boolean, updateMaster: boolean, actorName: string, actorId: string) {
+  await ensureMonth(db, month);
+  const departments = await getDepartments(db);
+  const bySection = new Map(departments.map(item => [normalizeMatch(item.meterSection), item]));
+  const byOccupantNumber = new Map(departments.filter(item => item.occupantNumber).map(item => [normalizeMatch(item.occupantNumber), item]));
   let created = 0;
   let updated = 0;
   let skipped = 0;
@@ -275,7 +319,7 @@ async function commitRows(rows: ParsedRow[], month: string, createMissing: boole
       await db.prepare(`INSERT INTO departments (meter_section, category, owner, phone, occupant, occupant_number, rent_start, rent_end, active)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`).bind(
         row.meterSection, row.category ?? "", row.owner ?? "", row.phone ?? "", row.occupant ?? "", row.occupantNumber ?? "",
-        row.rentStart ?? null, row.rentEnd ?? null,
+        row.rentStart ?? "", row.rentEnd ?? "",
       ).run();
       department = await db.prepare(`SELECT id, meter_section AS meterSection, category, owner, phone, occupant,
         occupant_number AS occupantNumber, rent_start AS rentStart, rent_end AS rentEnd, active
@@ -297,8 +341,8 @@ async function commitRows(rows: ParsedRow[], month: string, createMissing: boole
         row.phone ?? department.phone,
         row.occupant ?? department.occupant,
         row.occupantNumber ?? department.occupantNumber,
-        row.rentStart ?? department.rentStart,
-        row.rentEnd ?? department.rentEnd,
+        row.rentStart ?? department.rentStart ?? "",
+        row.rentEnd ?? department.rentEnd ?? "",
         department.id,
       ).run();
     }
@@ -326,12 +370,12 @@ async function commitRows(rows: ParsedRow[], month: string, createMissing: boole
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
       record.id, row.meterSection, row.category ?? department.category, row.owner ?? department.owner, row.phone ?? department.phone,
       row.occupant ?? department.occupant, row.occupantNumber ?? department.occupantNumber,
-      row.rentStart ?? department.rentStart, row.rentEnd ?? department.rentEnd,
+      row.rentStart ?? department.rentStart ?? "", row.rentEnd ?? department.rentEnd ?? "",
     ).run();
     await db.prepare(`UPDATE monthly_snapshots SET meter_section=?, category=?, owner=?, phone=?, occupant=?, occupant_number=?, rent_start=?, rent_end=? WHERE record_id=?`).bind(
       row.meterSection, row.category ?? department.category, row.owner ?? department.owner, row.phone ?? department.phone,
       row.occupant ?? department.occupant, row.occupantNumber ?? department.occupantNumber,
-      row.rentStart ?? department.rentStart, row.rentEnd ?? department.rentEnd, record.id,
+      row.rentStart ?? department.rentStart ?? "", row.rentEnd ?? department.rentEnd ?? "", record.id,
     ).run();
     await db.prepare("UPDATE record_meta SET confirmed=0, revision=revision+1 WHERE record_id=?").bind(record.id).run();
     updated += 1;
@@ -351,12 +395,12 @@ export async function GET(request: Request) {
     const url = new URL(request.url);
     const q = (url.searchParams.get("q") ?? "").trim();
     if (!q) return jsonNoStore({ results: [] });
-    const like = `%${q.toLowerCase()}%`;
+    const like = `%${q.toLowerCase().replace(/[\\%_]/g, char => `\\${char}`)}%`;
     const result = await getDb().prepare(`SELECT r.id, r.month, r.previous_reading AS previousReading, r.current_reading AS currentReading,
       r.meter_fee AS meterFee, r.kilo_price AS kiloPrice, r.rent, r.services,
       s.meter_section AS meterSection, s.occupant, s.occupant_number AS occupantNumber
       FROM monthly_records r JOIN monthly_snapshots s ON s.record_id=r.id
-      WHERE lower(s.meter_section) LIKE ? OR lower(s.occupant) LIKE ? OR lower(s.occupant_number) LIKE ?
+      WHERE lower(s.meter_section) LIKE ? ESCAPE '\\' OR lower(s.occupant) LIKE ? ESCAPE '\\' OR lower(s.occupant_number) LIKE ? ESCAPE '\\'
       ORDER BY r.month DESC LIMIT 100`).bind(like, like, like).all();
     return jsonNoStore({ results: result.results });
   } catch (error) {
@@ -368,6 +412,7 @@ export async function POST(request: Request) {
   try {
     sameOrigin(request);
     const actor = await requireSession(request);
+    assertJmr(actor.role !== "viewer", "الحساب للعرض فقط", 403);
     await initDatabase();
     const form = await request.formData();
     const file = form.get("file");
@@ -395,7 +440,7 @@ export async function POST(request: Request) {
       });
     }
     if (mode !== "commit") throw new JmrError("وضع الاستيراد غير صالح", 400);
-    const result = await commitRows(parsed.rows, month, createMissing, updateMaster, actor.name, actor.id);
+    const result = await transaction(tx => commitRows(tx, parsed.rows, month, createMissing, updateMaster, actor.name, actor.id));
     return jsonNoStore({ ok: true, ...result, warnings: parsed.warnings, message: `تم استيراد ${result.updated} سجل لشهر ${month}` });
   } catch (error) {
     return failure(error);

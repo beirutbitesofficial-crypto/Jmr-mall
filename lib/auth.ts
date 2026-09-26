@@ -82,8 +82,17 @@ export function sameOrigin(request: Request): void {
   assertJmr(site !== "cross-site", "طلب من مصدر غير مسموح", 403);
   const origin = request.headers.get("origin");
   if (!origin) return;
-  const expected = runtimeEnv().APP_ORIGIN ?? new URL(request.url).origin;
-  assertJmr(origin === expected, "طلب من مصدر غير مسموح", 403);
+  const configured = runtimeEnv().APP_ORIGIN?.trim().replace(/\/+$/, "");
+  if (configured) {
+    assertJmr(origin === configured, "طلب من مصدر غير مسموح", 403);
+    return;
+  }
+  // Without APP_ORIGIN, Hostinger's proxy hands the app an internal URL, so compare with the
+  // host the browser actually addressed.
+  const host = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim() || request.headers.get("host");
+  let originHost = "";
+  try { originHost = new URL(origin).host; } catch { /* invalid Origin is refused below */ }
+  assertJmr(origin === new URL(request.url).origin || (Boolean(host) && originHost === host), "طلب من مصدر غير مسموح", 403);
 }
 
 export async function readJsonObject(request: Request, maximum = 32_000): Promise<Record<string, unknown>> {

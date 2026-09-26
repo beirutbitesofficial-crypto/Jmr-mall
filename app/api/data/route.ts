@@ -193,6 +193,9 @@ export async function POST(request: Request) {
       if (latest) {
         assertJmr(Number(latest.locked) === 1, "اعتمد الشهر المفتوح قبل إنشاء شهر جديد", 409);
         assertJmr(month === nextMonth(latest.month), `الشهر التالي لازم يكون ${nextMonth(latest.month)}`, 409);
+      } else {
+        // The first month fixes the whole sequence, so a mistyped far-future month is refused.
+        assertJmr(month <= nextMonth(beirutToday().slice(0, 7)), "ما فيك تنشئ شهر بعد الشهر الجاي");
       }
       const active = await db.prepare("SELECT COUNT(*) AS count FROM departments WHERE active = 1").first<{ count: number }>();
       assertJmr(Number(active?.count ?? 0) > 0, "أضف قسماً فعّالاً أولاً");
@@ -332,6 +335,9 @@ export async function POST(request: Request) {
       const id = crypto.randomUUID();
       const createdAt = new Date().toISOString();
       await db.batch([
+        // Lock the record first: two receipts saved at the same moment would otherwise both see
+        // the old balance and together collect more than the invoice.
+        db.prepare("SELECT record_id FROM record_meta WHERE record_id=? FOR UPDATE").bind(recordId),
         db.prepare(`INSERT OR IGNORE INTO payments (id, record_id, kind, amount, paid_at, note, received_by, created_at, request_id)
           SELECT ?,?,?,?,?,?,?,?,? WHERE ? <= ? - COALESCE((SELECT SUM(amount) FROM payments WHERE record_id=? AND kind=? AND voided_at IS NULL),0) + 0.0001`)
           .bind(id, recordId, kind, amount, paidAt, note, actor.name, createdAt, requestId, amount, due, recordId, kind),
