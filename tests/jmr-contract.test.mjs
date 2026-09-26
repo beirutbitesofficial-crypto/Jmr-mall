@@ -111,7 +111,8 @@ test("Excel import previews changes, preserves master data by default and suppor
 });
 
 test("UI never exposes final invoices or collection before approval", async () => {
-  const source = await read("app/page.tsx");
+  // Interface text lives in lib/i18n.ts (English and Arabic); the logic stays in the page.
+  const source = `${await read("app/page.tsx")}\n${await read("lib/i18n.ts")}`;
   assert.match(source, /const invoicesReady = locked && currentRecords\.length > 0 && complete\.length === currentRecords\.length/);
   assert.match(source, /الفواتير النهائية بعد الاعتماد فقط/);
   assert.match(source, /التحصيل بيفتح بعد اعتماد الشهر/);

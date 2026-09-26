@@ -121,12 +121,6 @@ async function rateKey(scope: string, value: string): Promise<string> {
   return digest(`${scope}:${value}:${sessionSecret()}`);
 }
 
-async function sessionFingerprint(request: Request): Promise<string> {
-  const ua = (request.headers.get("user-agent") ?? "unknown").slice(0, 300);
-  const language = (request.headers.get("accept-language") ?? "unknown").slice(0, 120);
-  return rateKey("session-fingerprint", `${ua}|${language}`);
-}
-
 async function consumeFailure(key: string, maximum: number): Promise<void> {
   const db = getDb();
   const now = Date.now();
@@ -166,6 +160,9 @@ export async function login(request: Request, username: string, password: string
   const accountKey = await rateKey("account", normalized);
   const clientKey = await rateKey("client", clientAddress(request));
   assertJmr(!(await alreadyLimited(accountKey, MAX_ACCOUNT_FAILURES)) && !(await alreadyLimited(clientKey, MAX_CLIENT_FAILURES)), "محاولات كثيرة. انتظر 15 دقيقة", 429);
+  // Each attempt is counted before the password is checked, so parallel guesses cannot all
+  // slip past the limit; a successful sign-in clears the count again.
+  await Promise.all([consumeFailure(accountKey, MAX_ACCOUNT_FAILURES), consumeFailure(clientKey, MAX_CLIENT_FAILURES)]);
   const count = await usersCount();
   let actor: Actor | null = null;
   if (count === 0) {
@@ -178,26 +175,37 @@ export async function login(request: Request, username: string, password: string
       session_version AS sessionVersion FROM users WHERE username = ? COLLATE NOCASE LIMIT 1`).bind(normalized).first<UserRow>();
     if (user && Number(user.active) === 1 && await verifyPassword(password, user.passwordHash)) actor = { id: user.id, name: user.name, role: user.role, sessionVersion: Number(user.sessionVersion) };
   }
-  if (!actor) {
-    await Promise.all([consumeFailure(accountKey, MAX_ACCOUNT_FAILURES), consumeFailure(clientKey, MAX_CLIENT_FAILURES)]);
-    throw new JmrError("اسم المستخدم أو كلمة المرور غير صحيحة", 401);
-  }
+  if (!actor) throw new JmrError("اسم المستخدم أو كلمة المرور غير صحيحة", 401);
   await clearFailures(accountKey, clientKey);
   const token = hex(crypto.getRandomValues(new Uint8Array(32)));
   const sessionId = await digest(`${token}:${sessionSecret()}`);
-  const fingerprint = await sessionFingerprint(request);
   const expires = Date.now() + SESSION_MS;
+  // client_fingerprint was added to the live table by hand and may be NOT NULL; it is written
+  // empty and never used to find a session.
   await getDb().prepare(`INSERT INTO sessions (id, user_id, session_version, expires_at, created_at, client_fingerprint) VALUES (?, ?, ?, ?, ?, ?)`)
-    .bind(sessionId, actor.id, actor.sessionVersion, expires, Date.now(), fingerprint).run();
+    .bind(sessionId, actor.id, actor.sessionVersion, expires, Date.now(), "").run();
   return { actor, token, setCookie: cookie(token, SESSION_COOKIE_MAX_AGE_SECONDS), expiresAt: new Date(expires).toISOString() };
 }
 
-// TEMPORARY CLIENT DEMO MODE: login is bypassed and the app runs as owner.
-// This ID is intentionally not "bootstrap" so the demo can use all normal app features
-// without being forced to create a user first. Remove this bypass before production use.
-export async function readSession(_request: Request): Promise<Actor | null> {
+type SessionRow = { userId: string; sessionVersion: number; expiresAt: number };
+
+// A session is found only by the secret token in the browser's cookie. (An earlier fallback
+// matched sessions by browser type and language, which could sign one person in as another.)
+export async function readSession(request: Request): Promise<Actor | null> {
   await initDatabase();
-  return { id: "demo-owner", name: "JMR Demo", role: "owner", sessionVersion: 0 };
+  const token = parseCookie(request);
+  if (!token || !/^[a-f0-9]{64}$/.test(token)) return null;
+  const id = await digest(`${token}:${sessionSecret()}`);
+  const stored = await getDb().prepare(`SELECT user_id AS userId, session_version AS sessionVersion, expires_at AS expiresAt
+    FROM sessions WHERE id = ? LIMIT 1`).bind(id).first<SessionRow>();
+  if (!stored || Number(stored.expiresAt) <= Date.now()) return null;
+  if (stored.userId === "bootstrap") {
+    return await usersCount() === 0 ? { id: "bootstrap", name: "إعداد المالك", role: "owner", sessionVersion: 0 } : null;
+  }
+  const user = await getDb().prepare(`SELECT id, name, role, active, session_version AS sessionVersion FROM users WHERE id = ? LIMIT 1`)
+    .bind(stored.userId).first<{ id: string; name: string; role: Role; active: number; sessionVersion: number }>();
+  if (!user || Number(user.active) !== 1 || Number(user.sessionVersion) !== Number(stored.sessionVersion)) return null;
+  return { id: user.id, name: user.name, role: user.role, sessionVersion: Number(user.sessionVersion) };
 }
 
 export async function requireSession(request: Request): Promise<Actor> {
@@ -213,8 +221,6 @@ export async function logout(request: Request): Promise<string> {
     const id = await digest(`${token}:${sessionSecret()}`);
     await getDb().prepare("DELETE FROM sessions WHERE id = ?").bind(id).run();
   }
-  const fingerprint = await sessionFingerprint(request);
-  await getDb().prepare("DELETE FROM sessions WHERE client_fingerprint = ?").bind(fingerprint).run();
   return cookie("", 0);
 }
 
