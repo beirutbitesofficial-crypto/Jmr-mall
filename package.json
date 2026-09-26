@@ -8,6 +8,7 @@
     "build": "next build --webpack",
     "start": "next start -H 0.0.0.0",
     "test": "node --test tests/jmr-contract.test.mjs",
+    "test:db": "node --experimental-transform-types --no-warnings --test tests/postgres.test.mjs",
     "lint": "eslint . --ignore-pattern .next"
   },
   "dependencies": {

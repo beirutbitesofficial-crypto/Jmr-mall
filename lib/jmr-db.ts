@@ -67,6 +67,9 @@ function normalizeSql(sql: string): string {
     ignoreConflict = true;
     return "INSERT INTO";
   });
+  // PostgreSQL lowercases unquoted aliases ("AS meterSection" comes back as "metersection"),
+  // while the app reads camelCase keys written for SQLite. Quoting keeps the alias as written.
+  result = result.replace(/\bAS\s+([a-z][A-Za-z0-9_]*[A-Z][A-Za-z0-9_]*)\b/g, 'AS "$1"');
   let index = 0;
   result = result.replace(/\?/g, () => `$${++index}`);
   if (ignoreConflict && !/\bON\s+CONFLICT\b/i.test(result)) result += " ON CONFLICT DO NOTHING";
@@ -119,6 +122,34 @@ const db: D1Database = {
 
 export function getDb(): D1Database { return db; }
 
+// Runs work that needs reads and writes on one connection inside one transaction, so a
+// failure part-way leaves nothing half-written. Nested batches reuse the same transaction.
+export async function transaction<T>(work: (tx: D1Database) => Promise<T>): Promise<T> {
+  const client = await getPool().connect();
+  const tx: D1Database = {
+    prepare(query: string) { return statement(query, [], client); },
+    async batch<R>(statements: D1Statement[]) {
+      const results: D1Result<R>[] = [];
+      for (const item of statements) {
+        const prepared = item._prepared();
+        results.push(await statement(prepared.sql, prepared.values, client).run<R>());
+      }
+      return results;
+    },
+  };
+  try {
+    await client.query("BEGIN");
+    const result = await work(tx);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function initDatabase(): Promise<void> {
   if (initialized) return initialized;
   initialized = (async () => {
@@ -134,6 +165,13 @@ export async function initDatabase(): Promise<void> {
     } finally { client.release(); }
   })().catch(error => { initialized = null; throw error; });
   return initialized;
+}
+
+export async function closeDatabase(): Promise<void> {
+  const current = pool;
+  pool = null;
+  initialized = null;
+  await current?.end();
 }
 
 export async function usersCount(): Promise<number> {
