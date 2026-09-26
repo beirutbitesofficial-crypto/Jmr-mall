@@ -56,7 +56,7 @@ async function apiJson(response: Response) {
 
 export default function Home() {
   const [authState, setAuthState] = useState<AuthState>("checking");
-  const [username, setUsername] = useState("admin");
+  const [username, setUsername] = useState("jmradmin");
   const [password, setPassword] = useState("");
   const [data, setData] = useState<DataPayload | null>(null);
   const [page, setPage] = useState<Page>("audit");
@@ -193,6 +193,7 @@ export default function Home() {
   async function saveRecord(event: React.FormEvent) {
     event.preventDefault();
     if (!recordEdit) return;
+    if (!Object.values(recordEdit.draft).every(value => Number.isFinite(value) && value >= 0)) { notify("عبّي كل الخانات بأرقام صحيحة قبل الحفظ", "error"); return; }
     await run(async () => {
       const result = await action({ action: "updateRecord", id: recordEdit.record.id, expectedRevision: recordEdit.record.revision, record: recordEdit.draft });
       setRecordEdit(null);
@@ -265,6 +266,8 @@ export default function Home() {
 
   function printReceipt(payment: Payment) {
     setReceipt(payment);
+    // Leave receipt mode once printing ends; otherwise the next "print invoices" prints this receipt.
+    window.addEventListener("afterprint", () => setReceipt(null), { once: true });
     window.setTimeout(() => window.print(), 80);
   }
 
@@ -280,7 +283,7 @@ export default function Home() {
           <Field label="كلمة المرور" type="password" value={password} onChange={setPassword} required autoComplete="current-password" />
           <button className="primary login-button" disabled={busy}>{busy ? "جاري التحقق…" : "دخول آمن"}</button>
         </form>
-        <p className="login-foot">بالإعداد الأول: اسم المستخدم الافتراضي admin وكلمة المرور من JMR_ADMIN_PASSWORD.</p>
+        <p className="login-foot">بالإعداد الأول: اسم المستخدم من JMR_ADMIN_USERNAME (الافتراضي jmradmin) وكلمة المرور من JMR_ADMIN_PASSWORD.</p>
       </section>
       {toast && <ToastView toast={toast} />}
     </main>
@@ -293,7 +296,7 @@ export default function Home() {
     <main className={`app-shell page-${page} ${receipt ? "printing-receipt" : ""}`} dir="rtl">
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark">J</span><div><strong>BY JMR</strong><small>MALL AUDIT SYSTEM</small></div></div>
-        <nav>{navPages.map(item => <button key={item} type="button" className={page === item ? "active" : ""} aria-current={page === item ? "page" : undefined} disabled={formOpen || busy} onClick={() => { setPage(item); setSearch(""); }}>{pageNames[item]}</button>)}</nav>
+        <nav>{navPages.map(item => <button key={item} type="button" className={`nav-${item} ${page === item ? "active" : ""}`} aria-current={page === item ? "page" : undefined} disabled={formOpen || busy} onClick={() => { setPage(item); setSearch(""); }}><Icon name={item} /><span className="nav-label">{pageNames[item]}</span></button>)}<a className="nav-import" href="/import"><Icon name="import" /><span className="nav-label">استيراد Excel</span></a></nav>
         <div className="side-note"><strong>{data.actor.name}</strong><small>{roleLabel(data.actor.role)}</small><button className="secondary" disabled={busy || formOpen} onClick={() => void logout()}>تسجيل الخروج</button></div>
       </aside>
 
@@ -319,17 +322,17 @@ export default function Home() {
         </div>}
 
         {page === "audit" && <section className="panel">
-          <div className="panel-head"><div><h2>{monthLabel(month)}</h2><p>{complete.length} / {currentRecords.length} سجل مكتمل</p></div><div className="toolbar-actions"><input className="search-input" aria-label="بحث" placeholder="بحث بالقسم أو المستثمر…" value={search} onChange={event => setSearch(event.target.value)} />{owner && selectedStatus && <button className="primary" disabled={disabled || data.bootstrap} onClick={() => void run(async () => { const result = await action({ action: "lockMonth", month, locked: locked ? 0 : 1 }); notify(String(result.message ?? "تم")); })}>{locked ? "إعادة فتح الشهر" : "اعتماد الشهر"}</button>}</div></div>
+          <div className="panel-head"><div><h2>{monthLabel(month)}</h2><p>{complete.length} / {currentRecords.length} سجل مكتمل</p></div><div className="toolbar-actions"><input className="search-input" aria-label="بحث" placeholder="بحث بالقسم أو المستثمر…" value={search} onChange={event => setSearch(event.target.value)} />{owner && selectedStatus && <button className="primary" disabled={disabled || data.bootstrap} onClick={() => { if (locked && !window.confirm(`إعادة فتح ${monthLabel(month)} بتسمح بتعديل أرقام شهر معتمد. متابعة؟`)) return; void run(async () => { const result = await action({ action: "lockMonth", month, locked: locked ? 0 : 1 }); notify(String(result.message ?? "تم")); }); }}>{locked ? "إعادة فتح الشهر" : "اعتماد الشهر"}</button>}</div></div>
           {!selectedStatus ? <div className="empty"><h3>الشهر غير مُنشأ</h3><p>الشهر الجديد بياخد القراءة النهائية من الشهر المعتمد السابق، لكن بيضل غير مكتمل لحد ما تراجع وتحفظ كل سجل.</p>{writer && <button className="primary" disabled={disabled || data.bootstrap} onClick={() => void run(async () => { const result = await action({ action: "createMonth", month }); notify(String(result.message ?? "تم إنشاء الشهر")); })}>إنشاء الشهر</button>}</div> : <div className="table-wrap"><table><thead><tr><th>القسم / المستثمر</th><th>السابقة</th><th>الحالية</th><th>الاستهلاك</th><th>الإيجار والخدمات</th><th>الكهرباء</th><th>المجموع</th><th>الحالة</th><th>إجراء</th></tr></thead><tbody>{visibleRecords.map(record => {
             const charges = recordCharges(record);
-            return <tr key={record.id}><td><strong>{record.meterSection}</strong><small>{record.occupant}</small></td><td>{record.previousReading}</td><td>{record.currentReading}</td><td>{charges.usage}</td><td>{currency.format(charges.rent)}</td><td>{currency.format(charges.electricity)}</td><td>{currency.format(charges.total)}</td><td>{isRecordReady(record) ? "مكتمل" : "يحتاج مراجعة"}</td><td>{writer && !locked && <button className="secondary" disabled={disabled || data.bootstrap} onClick={() => startRecord(record)}>مراجعة وحفظ</button>}</td></tr>;
+            return <tr key={record.id}><td><strong>{record.meterSection}</strong><small>{record.occupant}</small></td><td>{record.previousReading}</td><td>{record.currentReading}</td><td>{charges.usage}</td><td>{currency.format(charges.rent)}</td><td>{currency.format(charges.electricity)}</td><td>{currency.format(charges.total)}</td><td><span className={`badge ${isRecordReady(record) ? "done" : "pending"}`}>{isRecordReady(record) ? "مكتمل" : "يحتاج مراجعة"}</span></td><td>{writer && !locked && <button className="secondary" disabled={disabled || data.bootstrap} onClick={() => startRecord(record)}>مراجعة وحفظ</button>}</td></tr>;
           })}</tbody></table></div>}
           {selectedStatus && !locked && missingDepartments.length > 0 && <div className="panel-footer"><strong>أقسام فعّالة مش موجودة بهالشهر:</strong>{missingDepartments.map(department => <button key={department.id} className="secondary" disabled={disabled || data.bootstrap} onClick={() => void run(async () => { const result = await action({ action: "addToMonth", month, departmentId: department.id }); notify(String(result.message ?? "تمت الإضافة")); })}>إضافة {department.meterSection}</button>)}</div>}
         </section>}
 
         {page === "departments" && <section className="panel">
           <div className="panel-head"><div><h2>الأقسام والعقود</h2><p>أي تعديل جديد ما بيغيّر نسخة المستأجر الموجودة بالفواتير السابقة.</p></div>{writer && <button className="primary" disabled={disabled || data.bootstrap} onClick={() => setDepartmentEdit({ draft: { ...emptyDepartment } })}>إضافة قسم</button>}</div>
-          <div className="table-wrap"><table><thead><tr><th>القسم</th><th>النوع</th><th>المالك</th><th>المستثمر</th><th>العقد</th><th>الحالة</th><th>إجراء</th></tr></thead><tbody>{data.departments.map(department => <tr key={department.id}><td>{department.meterSection}</td><td>{department.category}</td><td>{department.owner}<small>{department.phone}</small></td><td>{department.occupant}<small>{department.occupantNumber}</small></td><td>{department.rentStart || "—"}<small>{department.rentEnd || "—"}</small></td><td>{department.active ? "فعّال" : "مؤرشف"}</td><td>{writer && <button className="secondary" disabled={disabled || data.bootstrap} onClick={() => startDepartment(department)}>تعديل / أرشفة</button>}</td></tr>)}</tbody></table></div>
+          <div className="table-wrap"><table><thead><tr><th>القسم</th><th>النوع</th><th>المالك</th><th>المستثمر</th><th>العقد</th><th>الحالة</th><th>إجراء</th></tr></thead><tbody>{data.departments.map(department => <tr key={department.id}><td>{department.meterSection}</td><td>{department.category}</td><td>{department.owner}<small>{department.phone}</small></td><td>{department.occupant}<small>{department.occupantNumber}</small></td><td>{department.rentStart || "—"}<small>{department.rentEnd || "—"}</small></td><td><span className={`badge ${department.active ? "done" : "muted"}`}>{department.active ? "فعّال" : "مؤرشف"}</span></td><td>{writer && <button className="secondary" disabled={disabled || data.bootstrap} onClick={() => startDepartment(department)}>تعديل / أرشفة</button>}</td></tr>)}</tbody></table></div>
         </section>}
 
         {page === "invoices" && <section className="invoice-page">
@@ -347,7 +350,7 @@ export default function Home() {
           return <tr key={`${record.id}-${kind}`}><td>{record.meterSection}<small>{record.occupant}</small></td><td>{kind === "rent" ? "الإيجار والخدمات" : "الكهرباء"}</td><td>{currency.format(due)}</td><td>{currency.format(paid)}</td><td>{currency.format(balance)}</td><td>{writer && balance > 0 && <button className="primary" disabled={disabled || data.bootstrap} onClick={() => setPaymentEdit({ recordId: record.id, kind, amount: balance.toFixed(2), paidAt: today(), note: "", requestId: crypto.randomUUID() })}>تسجيل دفعة</button>}</td></tr>;
         }))}</tbody></table></div>}</section><section className="panel spaced"><div className="panel-head"><h2>الإيصالات ({monthPayments.length})</h2></div><div className="table-wrap"><table><thead><tr><th>الإيصال</th><th>القسم / النوع</th><th>المبلغ</th><th>المحصّل</th><th>الحالة</th><th>إجراء</th></tr></thead><tbody>{monthPayments.map(payment => {
           const record = currentRecords.find(item => item.id === payment.recordId);
-          return <tr key={payment.id}><td><small className="receipt-id">{payment.id}</small></td><td>{record?.meterSection}<small>{payment.kind === "rent" ? "إيجار وخدمات" : "كهرباء"}</small></td><td>{currency.format(payment.amount)}<small>{payment.paidAt}</small></td><td>{payment.receivedBy}</td><td>{payment.voidedAt ? "معكوس" : "فعّال"}<small>{payment.voidReason}</small></td><td><button className="secondary" onClick={() => printReceipt(payment)}>طباعة</button>{owner && !payment.voidedAt && <button className="danger-button" disabled={disabled} onClick={() => setVoidEdit({ id: payment.id, reason: "" })}>عكس</button>}</td></tr>;
+          return <tr key={payment.id}><td><small className="receipt-id">{payment.id}</small></td><td>{record?.meterSection}<small>{payment.kind === "rent" ? "إيجار وخدمات" : "كهرباء"}</small></td><td>{currency.format(payment.amount)}<small>{payment.paidAt}</small></td><td>{payment.receivedBy}</td><td><span className={`badge ${payment.voidedAt ? "void" : "done"}`}>{payment.voidedAt ? "معكوس" : "فعّال"}</span><small>{payment.voidReason}</small></td><td><button className="secondary" onClick={() => printReceipt(payment)}>طباعة</button>{owner && !payment.voidedAt && <button className="danger-button" disabled={disabled} onClick={() => setVoidEdit({ id: payment.id, reason: "" })}>عكس</button>}</td></tr>;
         })}</tbody></table></div></section></>}
 
         {page === "users" && owner && <section className="panel"><div className="panel-head"><div><h2>الحسابات والصلاحيات</h2><p>تغيير كلمة المرور أو الصلاحية بيلغي جلسات المستخدم القديمة.</p></div><button className="primary" disabled={disabled} onClick={() => setUserEdit({ username: "", name: "", role: data.bootstrap ? "owner" : "accountant", active: 1, password: "" })}>إضافة مستخدم</button></div><div className="table-wrap"><table><thead><tr><th>الاسم</th><th>المستخدم</th><th>الصلاحية</th><th>الحالة</th><th>إجراء</th></tr></thead><tbody>{data.users.map(user => <tr key={user.id}><td>{user.name}</td><td>{user.username}</td><td>{roleLabel(user.role)}</td><td>{user.active ? "فعّال" : "معطّل"}</td><td><button className="secondary" disabled={disabled} onClick={() => setUserEdit({ ...user, password: "" })}>تعديل</button></td></tr>)}</tbody></table></div></section>}
@@ -387,11 +390,25 @@ export default function Home() {
   );
 }
 
+const iconPaths: Record<string, string> = {
+  audit: "M4 5h16v14H4zM4 10h16M9 10v9",
+  departments: "M3 21h18M5 21V8l7-4 7 4v13M9 21v-6h6v6",
+  invoices: "M7 3h10v18l-2.5-1.5L12 21l-2.5-1.5L7 21zM10 8h4M10 12h4",
+  payments: "M3 7h18v10H3zM3 11h18M7 15h3",
+  users: "M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM2 21v-1a6 6 0 0 1 12 0v1M16 3.5a4 4 0 0 1 0 7.5M22 21v-1a6 6 0 0 0-4-5.6",
+  history: "M12 7v5l3 2M3.5 12a8.5 8.5 0 1 0 2.5-6L3 9M3 4v5h5",
+  import: "M12 3v12M7 10l5 5 5-5M4 21h16",
+};
+function Icon({ name }: { name: string }) {
+  return <svg className="icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={iconPaths[name]} /></svg>;
+}
 function Field({ label, value, onChange, type = "text", required = false, ...rest }: { label: string; value: string; onChange: (value: string) => void; type?: string; required?: boolean; min?: string; step?: string; autoComplete?: string }) {
   return <label className="field"><span>{label}</span><input type={type} value={value} onChange={event => onChange(event.target.value)} required={required} {...rest} /></label>;
 }
 function NumberField({ label, value, onChange, step = "0.01", disabled = false }: { label: string; value: number; onChange: (value: number) => void; step?: string; disabled?: boolean }) {
-  return <label className="field"><span>{label}</span><input type="number" min="0" step={step} value={value} disabled={disabled} onChange={event => onChange(Number(event.target.value))} required /></label>;
+  // Keep the typed text so a cleared box stays empty (and required) instead of silently becoming 0.
+  const [text, setText] = useState(String(value));
+  return <label className="field"><span>{label}</span><input type="number" min="0" step={step} value={text} disabled={disabled} onChange={event => { setText(event.target.value); onChange(event.target.value.trim() === "" ? Number.NaN : Number(event.target.value)); }} required /></label>;
 }
 function SaveButton({ busy }: { busy: boolean }) { return <button className="primary form-save" disabled={busy}>{busy ? "جاري الحفظ…" : "حفظ وتأكيد"}</button>; }
 function Stat({ label, value }: { label: string; value: number }) { return <div className="stat"><p>{label}</p><strong>{currency.format(value)}</strong></div>; }
@@ -410,7 +427,7 @@ function InvoiceIdentity({ record }: { record: MonthlyRecord }) {
 }
 function RentInvoice({ month, record, paid }: { month: string; record: MonthlyRecord; paid: number }) {
   const total = record.rent + record.services;
-  return <article className="invoice-card rent-invoice"><InvoiceHeader title="فاتورة الإيجار" month={month} /><InvoiceIdentity record={record} /><div className="invoice-values two-values"><div><span>قيمة الإيجار</span><strong>{currency.format(record.rent)}</strong></div><div><span>قيمة الخدمات</span><strong>{currency.format(record.services)}</strong></div></div><footer className="invoice-total"><span>المجموع</span><strong>{currency.format(total)}</strong></footer><p>المدفوع: {currency.format(paid)} · المتبقي: <strong>{currency.format(roundedMoney(total - paid))}</strong></p></article>;
+  return <article className="invoice-card rent-invoice"><InvoiceHeader title="فاتورة الإيجار" month={month} /><InvoiceIdentity record={record} /><div className="invoice-values two-values"><div><span>قيمة الإيجار</span><strong>{currency.format(record.rent)}</strong></div><div><span>قيمة الخدمات</span><strong>{currency.format(record.services)}</strong></div></div><footer className="invoice-total"><span>المجموع</span><strong>{currency.format(total)}</strong></footer><p className="invoice-balance">المدفوع: <bdi>{currency.format(paid)}</bdi> · المتبقي: <strong><bdi>{currency.format(roundedMoney(total - paid))}</bdi></strong></p></article>;
 }
 function ElectricityInvoice({ month, record, paid }: { month: string; record: MonthlyRecord; paid: number }) {
   const usage = record.currentReading - record.previousReading;
@@ -418,7 +435,7 @@ function ElectricityInvoice({ month, record, paid }: { month: string; record: Mo
   const difference = record.currentReading - record.previousReading;
   const total = subscription + record.services + record.rent;
   void difference; void total;
-  return <article className="invoice-card electricity-invoice"><InvoiceHeader title="فاتورة الكهرباء" month={month} /><InvoiceIdentity record={record} /><div className="invoice-values electricity-values"><div><span>العداد السابق</span><strong>{record.previousReading}</strong></div><div><span>العداد الحالي</span><strong>{record.currentReading}</strong></div><div><span>صرف العداد</span><strong>{usage}</strong></div><div><span>سعر الكيلو</span><strong>{currency.format(record.kiloPrice)}</strong></div><div><span>رسم العداد</span><strong>{currency.format(record.meterFee)}</strong></div></div><footer className="invoice-total"><span>قيمة الاشتراك</span><strong>{currency.format(roundedMoney(subscription))}</strong></footer><p>المدفوع: {currency.format(paid)} · المتبقي: <strong>{currency.format(roundedMoney(subscription - paid))}</strong></p></article>;
+  return <article className="invoice-card electricity-invoice"><InvoiceHeader title="فاتورة الكهرباء" month={month} /><InvoiceIdentity record={record} /><div className="invoice-values electricity-values"><div><span>العداد السابق</span><strong>{record.previousReading}</strong></div><div><span>العداد الحالي</span><strong>{record.currentReading}</strong></div><div><span>صرف العداد</span><strong>{usage}</strong></div><div><span>سعر الكيلو</span><strong>{currency.format(record.kiloPrice)}</strong></div><div><span>رسم العداد</span><strong>{currency.format(record.meterFee)}</strong></div></div><footer className="invoice-total"><span>قيمة الاشتراك</span><strong>{currency.format(roundedMoney(subscription))}</strong></footer><p className="invoice-balance">المدفوع: <bdi>{currency.format(paid)}</bdi> · المتبقي: <strong><bdi>{currency.format(roundedMoney(subscription - paid))}</bdi></strong></p></article>;
 }
 function Receipt({ payment, record }: { payment: Payment; record: MonthlyRecord }) {
   return <article className="invoice-card receipt-card"><InvoiceHeader title="إيصال قبض" month={record.month} /><p className="receipt-id">رقم الإيصال: {payment.id}</p><InvoiceIdentity record={record} /><p>نوع الفاتورة: {payment.kind === "rent" ? "الإيجار والخدمات" : "الكهرباء"}</p><footer className="invoice-total"><span>المبلغ المقبوض</span><strong>{currency.format(payment.amount)}</strong></footer><p>التاريخ: {payment.paidAt} · المحصّل: {payment.receivedBy}</p>{payment.note && <p>{payment.note}</p>}{payment.voidedAt && <p className="error-text">إيصال معكوس — {payment.voidReason} — بواسطة {payment.voidedBy}</p>}</article>;
