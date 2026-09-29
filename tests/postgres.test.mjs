@@ -30,7 +30,8 @@ test("accounting rules hold on a real PostgreSQL database", { skip: !url && "TES
   let cookie = "";
   const signIn = async (username, password) => {
     const response = await loginRoute.POST(new Request(`${origin}/api/auth/login`, { method: "POST", headers: { origin, "content-type": "application/json" }, body: JSON.stringify({ username, password }) }));
-    return { status: response.status, cookie: response.headers.get("set-cookie")?.split(";")[0] ?? "" };
+    const body = await response.json();
+    return { status: response.status, error: body.error ?? "", cookie: response.headers.get("set-cookie")?.split(";")[0] ?? "" };
   };
   const post = (body, as = cookie) => data.POST(new Request(`${origin}/api/data`, {
     method: "POST", headers: { origin, "content-type": "application/json", cookie: as }, body: JSON.stringify(body),
@@ -67,7 +68,13 @@ test("accounting rules hold on a real PostgreSQL database", { skip: !url && "TES
     await ok({ action: "addDepartment", department: { meterSection: "X", category: "c", owner: "", phone: "", occupant: "o", occupantNumber: "", rentStart: "", rentEnd: "", active: 1 } }, 403);
     await ok({ action: "saveUser", user: { username: "owner", name: "Jad", role: "owner", active: 1 }, password: "owner-password-1" });
     assert.equal((await data.GET(new Request(`${origin}/api/data`, { headers: { cookie } }))).status, 401, "setup session ends once the owner exists");
-    assert.equal((await signIn("jmradmin", "setup-password-123")).status, 401, "setup credentials stop working");
+    const retiredSetup = await signIn("jmradmin", "setup-password-123");
+    assert.equal(retiredSetup.status, 401, "setup credentials stop working");
+    assert.match(retiredSetup.error, /حساب الإعداد متوقف/, "and the message says why instead of 'wrong password'");
+    // Accounts saved with capital letters by older versions still sign in.
+    await admin.query("UPDATE users SET username='Owner' WHERE username='owner'");
+    assert.equal((await signIn("owner", "owner-password-1")).status, 200, "username match ignores case");
+    await admin.query("UPDATE users SET username='owner' WHERE username='Owner'");
     // The owner signs in with the new password and the session is found again on the next request.
     const ownerLogin = await signIn("owner", "owner-password-1");
     assert.equal(ownerLogin.status, 200);

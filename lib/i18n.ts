@@ -212,6 +212,7 @@ const serverMessages: Record<string, string> = {
   "اختار شهر صحيح": "Choose a valid month",
   "اختار ملف Excel": "Choose an Excel file",
   "اسم المستخدم أو كلمة المرور غير صحيحة": "Wrong username or password",
+  "حساب الإعداد متوقف لأنه في مستخدمين. ادخل بحساب مستخدم موجود": "The setup account is off because user accounts already exist. Sign in with an existing user account.",
   "اسم المستخدم لازم يكون 3–64 حرف إنكليزي أو رقم": "Username must be 3–64 English letters or numbers",
   "اسم المستخدم موجود مسبقاً": "That username already exists",
   "اعتمد الشهر المفتوح قبل إنشاء شهر جديد": "Approve the open month before creating a new one",

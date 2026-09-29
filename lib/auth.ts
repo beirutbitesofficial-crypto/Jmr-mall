@@ -164,16 +164,22 @@ export async function login(request: Request, username: string, password: string
   // slip past the limit; a successful sign-in clears the count again.
   await Promise.all([consumeFailure(accountKey, MAX_ACCOUNT_FAILURES), consumeFailure(clientKey, MAX_CLIENT_FAILURES)]);
   const count = await usersCount();
+  // Hosting panels sometimes keep stray spaces or line breaks around pasted values.
+  const expectedUser = (runtimeEnv().JMR_ADMIN_USERNAME ?? "jmradmin").trim().toLowerCase();
+  const expectedPassword = (runtimeEnv().JMR_ADMIN_PASSWORD ?? runtimeEnv().JMR_APP_PIN)?.trim();
+  const isSetupAccount = async () => typeof expectedPassword === "string" && expectedPassword.length > 0
+    && normalized === expectedUser && await equalSecrets(password, expectedPassword);
   let actor: Actor | null = null;
   if (count === 0) {
-    const expectedUser = (runtimeEnv().JMR_ADMIN_USERNAME ?? "jmradmin").trim().toLowerCase();
-    const expectedPassword = runtimeEnv().JMR_ADMIN_PASSWORD ?? runtimeEnv().JMR_APP_PIN;
     assertJmr(typeof expectedPassword === "string" && expectedPassword.length >= 4, "أضف JMR_ADMIN_PASSWORD لإعداد الحساب الأول", 503);
-    if (normalized === expectedUser && await equalSecrets(password, expectedPassword)) actor = { id: "bootstrap", name: "إعداد المالك", role: "owner", sessionVersion: 0 };
+    if (await isSetupAccount()) actor = { id: "bootstrap", name: "إعداد المالك", role: "owner", sessionVersion: 0 };
   } else {
+    // Accounts made before usernames were stored in lower case can still sign in.
     const user = await getDb().prepare(`SELECT id, username, name, role, active, password_hash AS passwordHash,
-      session_version AS sessionVersion FROM users WHERE username = ? COLLATE NOCASE LIMIT 1`).bind(normalized).first<UserRow>();
+      session_version AS sessionVersion FROM users WHERE lower(username) = ? LIMIT 1`).bind(normalized).first<UserRow>();
     if (user && Number(user.active) === 1 && await verifyPassword(password, user.passwordHash)) actor = { id: user.id, name: user.name, role: user.role, sessionVersion: Number(user.sessionVersion) };
+    // The setup account only works while there are no users; say so instead of "wrong password".
+    else if (!user && await isSetupAccount()) throw new JmrError("حساب الإعداد متوقف لأنه في مستخدمين. ادخل بحساب مستخدم موجود", 401);
   }
   if (!actor) throw new JmrError("اسم المستخدم أو كلمة المرور غير صحيحة", 401);
   await clearFailures(accountKey, clientKey);
