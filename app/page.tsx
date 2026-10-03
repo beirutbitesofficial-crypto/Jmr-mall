@@ -14,7 +14,6 @@ type AuthState = "checking" | "signedOut" | "signedIn";
 type Toast = { message: string; tone: "success" | "error" } | null;
 type DataPayload = {
   actor: Actor;
-  bootstrap: boolean;
   departments: Department[];
   records: MonthlyRecord[];
   months: MonthStatus[];
@@ -25,7 +24,7 @@ type DataPayload = {
 
 type DepartmentDraft = Omit<Department, "id">;
 type RecordDraft = Pick<MonthlyRecord, "meterFee" | "kiloPrice" | "rent" | "services" | "previousReading" | "currentReading">;
-type UserDraft = { id?: string; username: string; name: string; role: Role; active: number; password: string };
+type UserDraft = { id?: string; username: string; name: string; role: Role; active: number; password: string; managed?: boolean };
 type PaymentDraft = { recordId: number; kind: PaymentKind; amount: string; paidAt: string; note: string; requestId: string };
 
 const pages: Page[] = ["audit", "departments", "invoices", "payments", "users", "history"];
@@ -156,7 +155,7 @@ export default function Home() {
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
   }, [hasDrafts]);
-  const editableMonth = Boolean(writer && selectedStatus && !locked && data && !data.bootstrap && data.months[0]?.month === month);
+  const editableMonth = Boolean(writer && selectedStatus && !locked && data && data.months[0]?.month === month);
   const disabled = busy || stale || formOpen;
 
   const totals = complete.reduce((sum, record) => {
@@ -248,12 +247,7 @@ export default function Home() {
       }) });
       const result = await apiJson(response, lang);
       setUserEdit(null);
-      if (data.bootstrap) {
-        setData(null); setAuthState("signedOut"); setUsername(userEdit.username); setPassword("");
-        notify(t.users.ownerCreated);
-      } else {
-        await refresh(); notify(String(result.message ?? t.users.saved));
-      }
+      await refresh(); notify(String(result.message ?? t.users.saved));
     });
   }
 
@@ -333,7 +327,6 @@ export default function Home() {
           <div className="top-actions"><span className={`save-state ${stale ? "error-text" : ""}`}>{busy ? t.sync.busy : stale ? t.sync.stale : t.sync.ok}</span><button className="secondary" disabled={busy || formOpen} onClick={() => { if (hasDrafts && !window.confirm(t.discardDrafts)) return; setRowDrafts({}); void run(async () => { await refresh(); notify(t.refreshed); }); }}>{t.refresh}</button>{prefsControls}<button className="secondary mobile-signout" disabled={busy || formOpen} onClick={() => void logout()}>{t.signOut}</button></div>
         </header>
 
-        {data.bootstrap && <div className="notice-banner"><span><strong>{t.bootstrap.title}</strong> {t.bootstrap.body}</span><button className="primary" disabled={busy || formOpen} onClick={() => { setPage("users"); setUserEdit({ username: "", name: "", role: "owner", active: 1, password: "" }); }}>{t.bootstrap.action}</button></div>}
         {stale && <div className="notice-banner error">{t.staleBanner}</div>}
 
         {(page === "audit" || page === "invoices" || page === "payments") && <div className="toolbar">
@@ -349,8 +342,8 @@ export default function Home() {
         </div>}
 
         {page === "audit" && <section className="panel">
-          <div className="panel-head"><div><h2>{monthName(month, lang)}</h2><p>{t.audit.complete(complete.length, currentRecords.length)}</p></div><div className="toolbar-actions"><input className="search-input" aria-label={t.audit.search} placeholder={t.audit.search} value={search} onChange={event => setSearch(event.target.value)} />{owner && selectedStatus && <button className="primary" disabled={disabled || data.bootstrap || hasDrafts} title={hasDrafts ? t.audit.saveFirst : undefined} onClick={() => { if (locked && !window.confirm(t.audit.reopenConfirm(monthName(month, lang)))) return; void run(async () => { const result = await action({ action: "lockMonth", month, locked: locked ? 0 : 1 }); notify(String(result.message ?? t.saved)); }); }}>{locked ? t.audit.reopen : t.audit.approve}</button>}</div></div>
-          {!selectedStatus ? <div className="empty"><h3>{t.audit.notCreatedTitle}</h3><p>{t.audit.notCreatedBody}</p>{writer && <button className="primary" disabled={disabled || data.bootstrap} onClick={() => void run(async () => { const result = await action({ action: "createMonth", month }); notify(String(result.message ?? t.audit.created)); })}>{t.audit.create}</button>}</div> : <div className="table-wrap sheet-wrap"><table className="sheet"><thead><tr>
+          <div className="panel-head"><div><h2>{monthName(month, lang)}</h2><p>{t.audit.complete(complete.length, currentRecords.length)}</p></div><div className="toolbar-actions"><input className="search-input" aria-label={t.audit.search} placeholder={t.audit.search} value={search} onChange={event => setSearch(event.target.value)} />{owner && selectedStatus && <button className="primary" disabled={disabled || hasDrafts} title={hasDrafts ? t.audit.saveFirst : undefined} onClick={() => { if (locked && !window.confirm(t.audit.reopenConfirm(monthName(month, lang)))) return; void run(async () => { const result = await action({ action: "lockMonth", month, locked: locked ? 0 : 1 }); notify(String(result.message ?? t.saved)); }); }}>{locked ? t.audit.reopen : t.audit.approve}</button>}</div></div>
+          {!selectedStatus ? <div className="empty"><h3>{t.audit.notCreatedTitle}</h3><p>{t.audit.notCreatedBody}</p>{writer && <button className="primary" disabled={disabled} onClick={() => void run(async () => { const result = await action({ action: "createMonth", month }); notify(String(result.message ?? t.audit.created)); })}>{t.audit.create}</button>}</div> : <div className="table-wrap sheet-wrap"><table className="sheet"><thead><tr>
             <th className="pin pin-1">{t.audit.cols.section}</th><th className="pin pin-2">{t.audit.cols.occupant}</th><th className="pin pin-3">{t.audit.cols.occupantNumber}</th>
             <th>{t.audit.cols.meterFee}</th><th>{t.audit.cols.kiloPrice}</th><th>{t.audit.cols.rent}</th><th>{t.audit.cols.services}</th><th>{t.audit.cols.previousReading}</th><th>{t.audit.cols.currentReading}</th>
             <th>{t.audit.cols.usage}</th><th>{t.audit.cols.subscription}</th><th>{t.audit.cols.total}</th><th>{t.audit.cols.status}</th>
@@ -380,12 +373,12 @@ export default function Home() {
           })}</tbody><tfoot><tr><td className="pin pin-1" colSpan={3}>{t.audit.monthlyTotal}</td><td colSpan={6}></td><td>—</td>
             <td className="num">{currency.format(visibleRecords.reduce((sum, record) => { const v = draftValues(record); const u = v.currentReading - v.previousReading; return sum + (Object.values(v).every(Number.isFinite) ? roundedMoney(u * v.kiloPrice + v.meterFee) : 0); }, 0))}</td>
             <td className="num total">{currency.format(visibleRecords.reduce((sum, record) => { const v = draftValues(record); const u = v.currentReading - v.previousReading; return sum + (Object.values(v).every(Number.isFinite) ? roundedMoney(u * v.kiloPrice + v.meterFee + v.rent + v.services) : 0); }, 0))}</td><td></td></tr></tfoot></table></div>}
-          {selectedStatus && !locked && missingDepartments.length > 0 && <div className="panel-footer"><strong>{t.audit.missing}</strong>{missingDepartments.map(department => <button key={department.id} className="secondary" disabled={disabled || data.bootstrap} onClick={() => void run(async () => { const result = await action({ action: "addToMonth", month, departmentId: department.id }); notify(String(result.message ?? t.audit.added)); })}>{t.audit.add(department.meterSection)}</button>)}</div>}
+          {selectedStatus && !locked && missingDepartments.length > 0 && <div className="panel-footer"><strong>{t.audit.missing}</strong>{missingDepartments.map(department => <button key={department.id} className="secondary" disabled={disabled} onClick={() => void run(async () => { const result = await action({ action: "addToMonth", month, departmentId: department.id }); notify(String(result.message ?? t.audit.added)); })}>{t.audit.add(department.meterSection)}</button>)}</div>}
         </section>}
 
         {page === "departments" && <section className="panel">
-          <div className="panel-head"><div><h2>{t.departments.title}</h2><p>{t.departments.subtitle}</p></div>{writer && <button className="primary" disabled={disabled || data.bootstrap} onClick={() => setDepartmentEdit({ draft: { ...emptyDepartment } })}>{t.departments.add}</button>}</div>
-          <div className="table-wrap"><table><thead><tr><th>{t.departments.cols.section}</th><th>{t.departments.cols.category}</th><th>{t.departments.cols.owner}</th><th>{t.departments.cols.occupant}</th><th>{t.departments.cols.contract}</th><th>{t.departments.cols.status}</th><th>{t.departments.cols.action}</th></tr></thead><tbody>{data.departments.map(department => <tr key={department.id}><td><strong>{department.meterSection}</strong></td><td>{department.category}</td><td>{department.owner}<small>{department.phone}</small></td><td>{department.occupant}<small>{department.occupantNumber}</small></td><td>{department.rentStart || "—"}<small>{department.rentEnd || "—"}</small></td><td><span className={`badge ${department.active ? "done" : "muted"}`}>{department.active ? t.departments.active : t.departments.archived}</span></td><td>{writer && <button className="secondary" disabled={disabled || data.bootstrap} onClick={() => startDepartment(department)}>{t.departments.edit}</button>}</td></tr>)}</tbody></table></div>
+          <div className="panel-head"><div><h2>{t.departments.title}</h2><p>{t.departments.subtitle}</p></div>{writer && <button className="primary" disabled={disabled} onClick={() => setDepartmentEdit({ draft: { ...emptyDepartment } })}>{t.departments.add}</button>}</div>
+          <div className="table-wrap"><table><thead><tr><th>{t.departments.cols.section}</th><th>{t.departments.cols.category}</th><th>{t.departments.cols.owner}</th><th>{t.departments.cols.occupant}</th><th>{t.departments.cols.contract}</th><th>{t.departments.cols.status}</th><th>{t.departments.cols.action}</th></tr></thead><tbody>{data.departments.map(department => <tr key={department.id}><td><strong>{department.meterSection}</strong></td><td>{department.category}</td><td>{department.owner}<small>{department.phone}</small></td><td>{department.occupant}<small>{department.occupantNumber}</small></td><td>{department.rentStart || "—"}<small>{department.rentEnd || "—"}</small></td><td><span className={`badge ${department.active ? "done" : "muted"}`}>{department.active ? t.departments.active : t.departments.archived}</span></td><td>{writer && <button className="secondary" disabled={disabled} onClick={() => startDepartment(department)}>{t.departments.edit}</button>}</td></tr>)}</tbody></table></div>
         </section>}
 
         {page === "invoices" && <section className="invoice-page">
@@ -400,15 +393,15 @@ export default function Home() {
 
         {page === "payments" && <><section className="panel"><div className="panel-head"><div><h2>{t.payments.title}</h2><p>{t.payments.subtitle}</p></div></div>{!invoicesReady ? <div className="empty">{t.payments.locked}</div> : <div className="table-wrap"><table><thead><tr><th>{t.payments.cols.section}</th><th>{t.payments.cols.invoice}</th><th>{t.payments.cols.due}</th><th>{t.payments.cols.paid}</th><th>{t.payments.cols.remaining}</th><th>{t.payments.cols.action}</th></tr></thead><tbody>{currentRecords.flatMap(record => (["rent", "electricity"] as const).map(kind => {
           const due = recordCharges(record)[kind]; const paid = paidFor(record.id, kind); const balance = roundedMoney(due - paid);
-          return <tr key={`${record.id}-${kind}`}><td><strong>{record.meterSection}</strong><small>{record.occupant}</small></td><td>{kind === "rent" ? t.payments.rentKind : t.payments.electricityKind}</td><td className="num">{currency.format(due)}</td><td className="num">{currency.format(paid)}</td><td className="num strong">{currency.format(balance)}</td><td>{writer && balance > 0 && <button className="primary" disabled={disabled || data.bootstrap} onClick={() => setPaymentEdit({ recordId: record.id, kind, amount: balance.toFixed(2), paidAt: today(), note: "", requestId: crypto.randomUUID() })}>{t.payments.record}</button>}</td></tr>;
+          return <tr key={`${record.id}-${kind}`}><td><strong>{record.meterSection}</strong><small>{record.occupant}</small></td><td>{kind === "rent" ? t.payments.rentKind : t.payments.electricityKind}</td><td className="num">{currency.format(due)}</td><td className="num">{currency.format(paid)}</td><td className="num strong">{currency.format(balance)}</td><td>{writer && balance > 0 && <button className="primary" disabled={disabled} onClick={() => setPaymentEdit({ recordId: record.id, kind, amount: balance.toFixed(2), paidAt: today(), note: "", requestId: crypto.randomUUID() })}>{t.payments.record}</button>}</td></tr>;
         }))}</tbody></table></div>}</section><section className="panel spaced"><div className="panel-head"><h2>{t.payments.receipts(monthPayments.length)}</h2></div><div className="table-wrap"><table><thead><tr><th>{t.payments.receiptCols.id}</th><th>{t.payments.receiptCols.section}</th><th>{t.payments.receiptCols.amount}</th><th>{t.payments.receiptCols.by}</th><th>{t.payments.receiptCols.status}</th><th>{t.payments.receiptCols.action}</th></tr></thead><tbody>{monthPayments.map(payment => {
           const record = currentRecords.find(item => item.id === payment.recordId);
           return <tr key={payment.id}><td><small className="receipt-id">{payment.id}</small></td><td>{record?.meterSection}<small>{payment.kind === "rent" ? t.payments.rentKind : t.payments.electricityKind}</small></td><td className="num">{currency.format(payment.amount)}<small>{payment.paidAt}</small></td><td>{payment.receivedBy}</td><td><span className={`badge ${payment.voidedAt ? "void" : "done"}`}>{payment.voidedAt ? t.payments.voided : t.payments.active}</span><small>{payment.voidReason}</small></td><td><button className="secondary" onClick={() => printReceipt(payment)}>{t.payments.print}</button>{owner && !payment.voidedAt && <button className="danger-button" disabled={disabled} onClick={() => setVoidEdit({ id: payment.id, reason: "" })}>{t.payments.void}</button>}</td></tr>;
         })}</tbody></table></div></section></>}
 
-        {page === "users" && owner && <section className="panel"><div className="panel-head"><div><h2>{t.users.title}</h2><p>{t.users.subtitle}</p></div><button className="primary" disabled={disabled} onClick={() => setUserEdit({ username: "", name: "", role: data.bootstrap ? "owner" : "accountant", active: 1, password: "" })}>{t.users.add}</button></div>
+        {page === "users" && owner && <section className="panel"><div className="panel-head"><div><h2>{t.users.title}</h2><p>{t.users.subtitle}</p></div><button className="primary" disabled={disabled} onClick={() => setUserEdit({ username: "", name: "", role: "accountant", active: 1, password: "" })}>{t.users.add}</button></div>
           <div className="role-guide">{(["owner", "accountant", "viewer"] as const).map(role => <div key={role}><span className={`badge role-${role}`}>{t.roles[role]}</span><p>{t.roleHelp[role]}</p></div>)}</div>
-          <div className="table-wrap"><table><thead><tr><th>{t.users.cols.name}</th><th>{t.users.cols.username}</th><th>{t.users.cols.role}</th><th>{t.users.cols.status}</th><th>{t.users.cols.action}</th></tr></thead><tbody>{data.users.map(user => <tr key={user.id}><td><strong>{user.name}</strong>{user.id === data.actor.id && <small>{t.users.you}</small>}</td><td className="mono-text">{user.username}</td><td><span className={`badge role-${user.role}`}>{t.roles[user.role]}</span></td><td><span className={`badge ${user.active ? "done" : "muted"}`}>{user.active ? t.users.active : t.users.disabled}</span></td><td><button className="secondary" disabled={disabled} onClick={() => setUserEdit({ ...user, password: "" })}>{t.users.edit}</button></td></tr>)}</tbody></table></div></section>}
+          <div className="table-wrap"><table><thead><tr><th>{t.users.cols.name}</th><th>{t.users.cols.username}</th><th>{t.users.cols.role}</th><th>{t.users.cols.status}</th><th>{t.users.cols.action}</th></tr></thead><tbody>{data.users.map(user => <tr key={user.id}><td><strong>{user.name}</strong>{user.id === data.actor.id && <small>{t.users.you}</small>}{user.managed && <small>{t.users.mainAccount}</small>}</td><td className="mono-text">{user.username}</td><td><span className={`badge role-${user.role}`}>{t.roles[user.role]}</span></td><td><span className={`badge ${user.active ? "done" : "muted"}`}>{user.active ? t.users.active : t.users.disabled}</span></td><td><button className="secondary" disabled={disabled} onClick={() => setUserEdit({ ...user, password: "" })}>{t.users.edit}</button></td></tr>)}</tbody></table></div></section>}
 
         {page === "history" && owner && <section className="panel"><div className="panel-head"><div><h2>{t.history.title}</h2><p>{t.history.subtitle}</p></div></div><div className="table-wrap"><table><thead><tr><th>{t.history.cols.date}</th><th>{t.history.cols.user}</th><th>{t.history.cols.action}</th><th>{t.history.cols.detail}</th></tr></thead><tbody>{data.audit.map(entry => <tr key={entry.id}><td className="nowrap">{formatDate(entry.createdAt)}</td><td>{entry.actorName}</td><td><code>{entry.action}</code></td><td>{entry.detail}</td></tr>)}</tbody></table></div></section>}
       </section>
@@ -430,12 +423,13 @@ export default function Home() {
 
       {userEdit && <Modal title={userEdit.id ? t.users.editTitle : t.users.addTitle} busy={busy} closeLabel={t.close} onClose={() => setUserEdit(null)}><form onSubmit={saveUser}>
         <Field label={t.users.fields.name} value={userEdit.name} onChange={value => setUserEdit({ ...userEdit, name: value })} required autoComplete="off" />
+        {userEdit.managed ? <p className="field-hint">{t.users.mainAccountHint}</p> : <>
         <Field label={t.users.fields.username} value={userEdit.username} onChange={value => setUserEdit({ ...userEdit, username: value.toLowerCase() })} required autoComplete="off" />
         <p className="field-hint">{t.users.usernameHint}</p>
-        <Field label={userEdit.id ? t.users.fields.passwordKeep : t.users.fields.passwordNew} type="password" value={userEdit.password} onChange={value => setUserEdit({ ...userEdit, password: value })} required={!userEdit.id} autoComplete="new-password" />
-        <label className="field"><span>{t.users.fields.role}</span><select value={userEdit.role} disabled={data.bootstrap || userEdit.id === data.actor.id} onChange={event => setUserEdit({ ...userEdit, role: event.target.value as Role })}><option value="owner">{t.roles.owner}</option><option value="accountant">{t.roles.accountant}</option><option value="viewer">{t.roles.viewer}</option></select></label>
+        <Field label={userEdit.id ? t.users.fields.passwordKeep : t.users.fields.passwordNew} type="password" value={userEdit.password} onChange={value => setUserEdit({ ...userEdit, password: value })} required={!userEdit.id} autoComplete="new-password" /></>}
+        <label className="field"><span>{t.users.fields.role}</span><select value={userEdit.role} disabled={userEdit.managed || userEdit.id === data.actor.id} onChange={event => setUserEdit({ ...userEdit, role: event.target.value as Role })}><option value="owner">{t.roles.owner}</option><option value="accountant">{t.roles.accountant}</option><option value="viewer">{t.roles.viewer}</option></select></label>
         <p className="field-hint">{t.roleHelp[userEdit.role]}</p>
-        <label className="check-field"><input type="checkbox" checked={userEdit.active === 1} disabled={data.bootstrap || userEdit.id === data.actor.id} onChange={event => setUserEdit({ ...userEdit, active: event.target.checked ? 1 : 0 })} />{t.users.fields.active}</label>
+        <label className="check-field"><input type="checkbox" checked={userEdit.active === 1} disabled={userEdit.managed || userEdit.id === data.actor.id} onChange={event => setUserEdit({ ...userEdit, active: event.target.checked ? 1 : 0 })} />{t.users.fields.active}</label>
         <SaveButton busy={busy} label={t.save} busyLabel={t.saving} /></form></Modal>}
 
       {receipt && <div className="receipt-print" dir="rtl" lang="ar"><Receipt payment={receipt} record={data.records.find(record => record.id === receipt.recordId)!} /></div>}
