@@ -48,14 +48,14 @@ Set these in the **runtime environment** (not in source control):
 
 ```text
 JMR_ADMIN_USERNAME=admin
-JMR_ADMIN_PASSWORD=<strong initial setup password>
+JMR_ADMIN_PASSWORD=<main owner password, 12+ characters>
 JMR_SESSION_SECRET=<random secret at least 32 characters>
 APP_ORIGIN=https://your-real-domain.example
 ```
 
-`JMR_ADMIN_USERNAME` + `JMR_ADMIN_PASSWORD` are used only while there are no application users. After the first owner account is created, normal database users take over.
+`JMR_ADMIN_USERNAME` + `JMR_ADMIN_PASSWORD` define the main owner account. On every start the app creates it if missing and keeps it an active owner with that password, so the person holding these settings can always sign in. Other users are added from the Users page.
 
-For backwards compatibility only, `JMR_APP_PIN` can act as the initial password when `JMR_ADMIN_PASSWORD` is absent. Prefer the stronger admin password variable.
+`JMR_APP_PIN` is no longer used.
 
 Generate a session secret with a password manager or a cryptographically secure random generator. Rotating `JMR_SESSION_SECRET` invalidates existing login cookies/sessions.
 
@@ -92,7 +92,7 @@ Expected response:
 {"ok":true}
 ```
 
-Then sign in with the initial setup account, immediately create the permanent owner account, and sign back in with that account.
+Then sign in with `JMR_ADMIN_USERNAME` and `JMR_ADMIN_PASSWORD`.
 
 ## Roles
 

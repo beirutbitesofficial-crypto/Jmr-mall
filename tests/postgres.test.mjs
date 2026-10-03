@@ -59,18 +59,24 @@ test("accounting rules hold on a real PostgreSQL database", { skip: !url && "TES
   try {
     // ---- Sign-in: nothing is readable without a session ----
     assert.equal((await data.GET(new Request(`${origin}/api/data`))).status, 401);
+    // A database from an older version already holds the main username, with capital letters,
+    // a different password, a lower role and disabled. The Hostinger settings still win.
+    await admin.query(`INSERT INTO users (id, username, name, role, active, password_hash, session_version)
+      VALUES ('legacy-admin', 'JmrAdmin', 'Old admin', 'viewer', 0, 'pbkdf2-sha256$120000$00000000000000000000000000000000$00', 3)`);
     assert.equal((await signIn("jmradmin", "wrong-password")).status, 401);
-    // First setup: the Hostinger admin credentials only allow creating the owner account.
-    const setup = await signIn("jmradmin", "setup-password-123");
-    assert.equal(setup.status, 200);
-    cookie = setup.cookie;
-    assert.equal((await state()).bootstrap, true);
-    await ok({ action: "addDepartment", department: { meterSection: "X", category: "c", owner: "", phone: "", occupant: "o", occupantNumber: "", rentStart: "", rentEnd: "", active: 1 } }, 403);
+    // The main owner signs in with JMR_ADMIN_USERNAME / JMR_ADMIN_PASSWORD; no setup step.
+    const mainLogin = await signIn("jmradmin", "setup-password-123");
+    assert.equal(mainLogin.status, 200, "Hostinger credentials always sign in the main owner");
+    cookie = mainLogin.cookie;
+    const mainState = await state();
+    assert.equal(mainState.actor.role, "owner");
+    assert.equal(mainState.actor.id, "legacy-admin", "the existing row is reused, not duplicated");
+    assert.deepEqual(mainState.users.map(user => [user.username, user.role, user.active, user.managed]), [["jmradmin", "owner", 1, true]]);
+    // Its password, role and status follow the Hostinger settings, so the Users page cannot change them.
+    const managedEdit = await post({ action: "saveUser", id: "legacy-admin", user: { username: "jmradmin", name: "Main", role: "owner", active: 1 }, password: "another-password-1" });
+    assert.equal(managedEdit.status, 400);
+    await ok({ action: "saveUser", id: "legacy-admin", user: { username: "jmradmin", name: "Main", role: "owner", active: 1 } });
     await ok({ action: "saveUser", user: { username: "owner", name: "Jad", role: "owner", active: 1 }, password: "owner-password-1" });
-    assert.equal((await data.GET(new Request(`${origin}/api/data`, { headers: { cookie } }))).status, 401, "setup session ends once the owner exists");
-    const retiredSetup = await signIn("jmradmin", "setup-password-123");
-    assert.equal(retiredSetup.status, 401, "setup credentials stop working");
-    assert.match(retiredSetup.error, /حساب الإعداد متوقف/, "and the message says why instead of 'wrong password'");
     // Accounts saved with capital letters by older versions still sign in.
     await admin.query("UPDATE users SET username='Owner' WHERE username='owner'");
     assert.equal((await signIn("owner", "owner-password-1")).status, 200, "username match ignores case");

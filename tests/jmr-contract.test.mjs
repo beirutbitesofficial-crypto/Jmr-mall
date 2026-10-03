@@ -83,7 +83,7 @@ test("payments are idempotent and database-side balance checks prevent overpayme
   assert.match(source, /void_reason/);
 });
 
-test("authentication keeps secure cookies, roles, password hashing and bootstrap credentials", async () => {
+test("authentication keeps secure cookies, roles, password hashing and the main owner from the Hostinger settings", async () => {
   const [auth, login, session, data] = await Promise.all([
     read("lib/auth.ts"), read("app/api/auth/login/route.ts"), read("app/api/auth/session/route.ts"), read("app/api/data/route.ts"),
   ]);

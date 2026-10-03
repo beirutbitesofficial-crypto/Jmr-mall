@@ -73,6 +73,8 @@ export type PublicUser = {
   role: Role;
   active: number;
   sessionVersion: number;
+  /** The main owner account set by JMR_ADMIN_USERNAME / JMR_ADMIN_PASSWORD. */
+  managed?: boolean;
 };
 
 export type AuditEntry = {

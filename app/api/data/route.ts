@@ -1,11 +1,11 @@
-import { failure, hashPassword, jsonNoStore, readJsonObject, requireSession, sameOrigin } from "@/lib/auth";
+import { failure, hashPassword, jsonNoStore, mainOwnerUsername, readJsonObject, requireSession, sameOrigin } from "@/lib/auth";
 import {
   assertJmr, cleanText, isRecordReady, JmrError, nextMonth, nonNegativeNumber,
   optionalDate, positiveId, recordCharges, requireMonth, roundedMoney, validDate,
   type Actor, type AuditEntry, type Department, type MonthStatus, type MonthlyRecord,
   type Payment, type PaymentKind, type PublicUser, type Role,
 } from "@/lib/jmr-core";
-import { getDb, initDatabase, usersCount } from "@/lib/jmr-db";
+import { getDb, initDatabase } from "@/lib/jmr-db";
 
 export const dynamic = "force-dynamic";
 
@@ -108,9 +108,11 @@ export async function GET(request: Request) {
         FROM payments ORDER BY created_at DESC`).all<Payment>(),
     ]);
 
+    const mainOwner = mainOwnerUsername();
     const users = actor.role === "owner"
       ? (await db.prepare(`SELECT id, username, name, role, active, session_version AS sessionVersion
           FROM users ORDER BY name`).all<PublicUser>()).results
+          .map(user => ({ ...user, managed: user.username.toLowerCase() === mainOwner }))
       : [];
     const audit = actor.role === "owner"
       ? (await db.prepare(`SELECT id, created_at AS createdAt, actor_name AS actorName, action, detail
@@ -119,7 +121,6 @@ export async function GET(request: Request) {
 
     return jsonNoStore({
       actor,
-      bootstrap: actor.id === "bootstrap",
       departments: departments.results,
       records: records.results,
       months: months.results,
@@ -140,7 +141,6 @@ export async function POST(request: Request) {
     const body = await readJsonObject(request);
     const action = typeof body.action === "string" ? body.action : "";
     assertJmr(action.length > 0, "الإجراء غير صالح");
-    if (actor.id === "bootstrap") assertJmr(action === "saveUser", "أنشئ حساب المالك أولاً", 403);
     requireWrite(actor);
     const db = getDb();
 
@@ -380,11 +380,13 @@ export async function POST(request: Request) {
       const existing = id ? await db.prepare(`SELECT id, username, role, active, password_hash AS passwordHash,
         session_version AS sessionVersion FROM users WHERE id=?`).bind(id).first<{ id: string; username: string; role: Role; active: number; passwordHash: string; sessionVersion: number }>() : null;
       if (id) assertJmr(existing, "الحساب غير موجود", 404);
-      const duplicate = await db.prepare("SELECT id FROM users WHERE username=? COLLATE NOCASE AND id<>?").bind(username, id ?? "").first();
+      const duplicate = await db.prepare("SELECT id FROM users WHERE lower(username)=? AND id<>?").bind(username, id ?? "").first();
       assertJmr(!duplicate, "اسم المستخدم موجود مسبقاً", 409);
 
-      if (actor.id === "bootstrap") {
-        assertJmr(!id && role === "owner" && active === 1, "أول حساب لازم يكون مالك فعّال");
+      // The main account follows the Hostinger settings; changing it here would be undone on restart.
+      if (existing && existing.username.toLowerCase() === mainOwnerUsername()) {
+        assertJmr(username === existing.username.toLowerCase() && role === "owner" && active === 1 && !password,
+          "الحساب الرئيسي بيتغيّر من إعدادات Hostinger (JMR_ADMIN_USERNAME وJMR_ADMIN_PASSWORD)");
       }
       if (id === actor.id) assertJmr(role === "owner" && active === 1, "ما فيك تعطّل حسابك أو تشيل صلاحية المالك");
       if (existing?.role === "owner" && (role !== "owner" || active === 0)) {
@@ -407,9 +409,7 @@ export async function POST(request: Request) {
         auditStatement(actor, "saveUser", detail),
       ]);
       if (existing && changedSecurity) await db.prepare("DELETE FROM sessions WHERE user_id=?").bind(userId).run();
-      if (actor.id === "bootstrap") await db.prepare("DELETE FROM sessions WHERE user_id='bootstrap'").run();
-      assertJmr(await usersCount() > 0, "تعذّر إنشاء الحساب", 503);
-      return jsonNoStore({ ok: true, message: actor.id === "bootstrap" ? "تم إنشاء حساب المالك. سجّل الدخول بالحساب الجديد." : "تم حفظ المستخدم" });
+      return jsonNoStore({ ok: true, message: "تم حفظ المستخدم" });
     }
 
     throw new JmrError("الإجراء غير معروف", 400);

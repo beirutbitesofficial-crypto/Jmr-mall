@@ -150,6 +150,46 @@ async function clearFailures(...keys: string[]): Promise<void> {
   await db.batch(keys.map(key => db.prepare("DELETE FROM auth_login_rate_limits WHERE client_key = ?").bind(key)));
 }
 
+// The main owner account comes from the Hostinger settings, like the manager account in the
+// POS: JMR_ADMIN_USERNAME (default jmradmin) and JMR_ADMIN_PASSWORD. It is a normal user row,
+// created if missing and brought back in line (owner, active, same password) on every start, so
+// whoever holds those settings can always get in. Other users are managed from the Users page.
+export function mainOwnerUsername(): string | null {
+  const password = runtimeEnv().JMR_ADMIN_PASSWORD?.trim();
+  return password ? (runtimeEnv().JMR_ADMIN_USERNAME ?? "jmradmin").trim().toLowerCase() : null;
+}
+
+let mainOwnerReady: Promise<void> | null = null;
+
+export function ensureMainOwner(): Promise<void> {
+  if (!mainOwnerReady) mainOwnerReady = syncMainOwner().catch(error => { mainOwnerReady = null; throw error; });
+  return mainOwnerReady;
+}
+
+async function syncMainOwner(): Promise<void> {
+  await initDatabase();
+  const username = mainOwnerUsername();
+  if (!username) return;
+  // Hosting panels sometimes keep stray spaces or line breaks around pasted values.
+  const password = runtimeEnv().JMR_ADMIN_PASSWORD!.trim();
+  assertJmr(/^[a-z0-9._-]{3,64}$/.test(username), "JMR_ADMIN_USERNAME لازم يكون 3–64 حرف إنكليزي أو رقم", 503);
+  assertJmr(password.length >= 12 && password.length <= 128, "JMR_ADMIN_PASSWORD لازم يكون بين 12 و128 حرف", 503);
+  const db = getDb();
+  const existing = await db.prepare(`SELECT id, role, active, password_hash AS passwordHash FROM users WHERE lower(username) = ? LIMIT 1`)
+    .bind(username).first<{ id: string; role: Role; active: number; passwordHash: string }>();
+  if (!existing) {
+    await db.prepare(`INSERT INTO users (id, username, name, role, active, password_hash, session_version)
+      VALUES (?, ?, ?, 'owner', 1, ?, 1) ON CONFLICT DO NOTHING`)
+      .bind(crypto.randomUUID(), username, "Owner", await hashPassword(password)).run();
+    return;
+  }
+  const samePassword = await verifyPassword(password, existing.passwordHash);
+  if (samePassword && existing.role === "owner" && Number(existing.active) === 1) return;
+  // A changed password signs the account out everywhere, as it does from the Users page.
+  await db.prepare(`UPDATE users SET username = ?, role = 'owner', active = 1, password_hash = ?, session_version = session_version + 1 WHERE id = ?`)
+    .bind(username, samePassword ? existing.passwordHash : await hashPassword(password), existing.id).run();
+}
+
 type UserRow = { id: string; username: string; name: string; role: Role; active: number; passwordHash: string; sessionVersion: number };
 
 export async function login(request: Request, username: string, password: string): Promise<{ actor: Actor; token: string; setCookie: string; expiresAt: string }> {
@@ -163,24 +203,13 @@ export async function login(request: Request, username: string, password: string
   // Each attempt is counted before the password is checked, so parallel guesses cannot all
   // slip past the limit; a successful sign-in clears the count again.
   await Promise.all([consumeFailure(accountKey, MAX_ACCOUNT_FAILURES), consumeFailure(clientKey, MAX_CLIENT_FAILURES)]);
-  const count = await usersCount();
-  // Hosting panels sometimes keep stray spaces or line breaks around pasted values.
-  const expectedUser = (runtimeEnv().JMR_ADMIN_USERNAME ?? "jmradmin").trim().toLowerCase();
-  const expectedPassword = (runtimeEnv().JMR_ADMIN_PASSWORD ?? runtimeEnv().JMR_APP_PIN)?.trim();
-  const isSetupAccount = async () => typeof expectedPassword === "string" && expectedPassword.length > 0
-    && normalized === expectedUser && await equalSecrets(password, expectedPassword);
+  await ensureMainOwner();
+  assertJmr(await usersCount() > 0, "أضف JMR_ADMIN_USERNAME وJMR_ADMIN_PASSWORD بإعدادات Hostinger", 503);
   let actor: Actor | null = null;
-  if (count === 0) {
-    assertJmr(typeof expectedPassword === "string" && expectedPassword.length >= 4, "أضف JMR_ADMIN_PASSWORD لإعداد الحساب الأول", 503);
-    if (await isSetupAccount()) actor = { id: "bootstrap", name: "إعداد المالك", role: "owner", sessionVersion: 0 };
-  } else {
-    // Accounts made before usernames were stored in lower case can still sign in.
-    const user = await getDb().prepare(`SELECT id, username, name, role, active, password_hash AS passwordHash,
-      session_version AS sessionVersion FROM users WHERE lower(username) = ? LIMIT 1`).bind(normalized).first<UserRow>();
-    if (user && Number(user.active) === 1 && await verifyPassword(password, user.passwordHash)) actor = { id: user.id, name: user.name, role: user.role, sessionVersion: Number(user.sessionVersion) };
-    // The setup account only works while there are no users; say so instead of "wrong password".
-    else if (!user && await isSetupAccount()) throw new JmrError("حساب الإعداد متوقف لأنه في مستخدمين. ادخل بحساب مستخدم موجود", 401);
-  }
+  // Accounts made before usernames were stored in lower case can still sign in.
+  const user = await getDb().prepare(`SELECT id, username, name, role, active, password_hash AS passwordHash,
+    session_version AS sessionVersion FROM users WHERE lower(username) = ? LIMIT 1`).bind(normalized).first<UserRow>();
+  if (user && Number(user.active) === 1 && await verifyPassword(password, user.passwordHash)) actor = { id: user.id, name: user.name, role: user.role, sessionVersion: Number(user.sessionVersion) };
   if (!actor) throw new JmrError("اسم المستخدم أو كلمة المرور غير صحيحة", 401);
   await clearFailures(accountKey, clientKey);
   const token = hex(crypto.getRandomValues(new Uint8Array(32)));
@@ -205,9 +234,6 @@ export async function readSession(request: Request): Promise<Actor | null> {
   const stored = await getDb().prepare(`SELECT user_id AS userId, session_version AS sessionVersion, expires_at AS expiresAt
     FROM sessions WHERE id = ? LIMIT 1`).bind(id).first<SessionRow>();
   if (!stored || Number(stored.expiresAt) <= Date.now()) return null;
-  if (stored.userId === "bootstrap") {
-    return await usersCount() === 0 ? { id: "bootstrap", name: "إعداد المالك", role: "owner", sessionVersion: 0 } : null;
-  }
   const user = await getDb().prepare(`SELECT id, name, role, active, session_version AS sessionVersion FROM users WHERE id = ? LIMIT 1`)
     .bind(stored.userId).first<{ id: string; name: string; role: Role; active: number; sessionVersion: number }>();
   if (!user || Number(user.active) !== 1 || Number(user.sessionVersion) !== Number(stored.sessionVersion)) return null;
