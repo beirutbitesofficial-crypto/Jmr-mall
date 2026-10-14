@@ -211,3 +211,20 @@ export async function audit(actor: Actor, action: string, entityType: string, en
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(actor.id, actor.name, actor.role, action, entityType, entityId, details, Date.now()).run();
 }
+
+// A new month row for each matching department starts from that department's last month:
+// previous reading = last current reading, and the rates (meter fee, kWh price, rent, services)
+// copied over. Everything stays editable; the row still has to be saved before approval.
+// Binds: month, month, then whatever `where` needs.
+export function carryForwardRecordsSql(where: string): string {
+  return `INSERT OR IGNORE INTO monthly_records (
+      month, department_id, previous_reading, current_reading, meter_fee, kilo_price, rent, services, locked
+    ) SELECT ?, d.id, COALESCE(p.current_reading, 0), COALESCE(p.current_reading, 0),
+      COALESCE(p.meter_fee, 0), COALESCE(p.kilo_price, 0), COALESCE(p.rent, 0), COALESCE(p.services, 0), 0
+    FROM departments d
+    LEFT JOIN LATERAL (
+      SELECT current_reading, meter_fee, kilo_price, rent, services FROM monthly_records
+      WHERE department_id = d.id AND month < ? ORDER BY month DESC LIMIT 1
+    ) p ON TRUE
+    WHERE ${where}`;
+}
