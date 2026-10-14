@@ -1,4 +1,4 @@
-import { Pool, type PoolClient } from "pg";
+import { Pool, types, type CustomTypesConfig, type PoolClient } from "pg";
 import type { Actor } from "@/lib/jmr-core";
 
 export type D1Result<T = Record<string, unknown>> = {
@@ -44,6 +44,18 @@ export function runtimeEnv(): RuntimeEnv {
 let pool: Pool | null = null;
 let initialized: Promise<void> | null = null;
 
+// The live tables use bigint ids and timestamps, which pg returns as strings by default. The app
+// compares and validates them as numbers ("Invalid ID" on save), so read them as numbers while
+// they fit exactly.
+const bigintAsNumber = (value: string): number | string => {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : value;
+};
+const typeParsers: CustomTypesConfig = {
+  getTypeParser: ((oid: number, format?: "text" | "binary") =>
+    oid === types.builtins.INT8 && format !== "binary" ? bigintAsNumber : types.getTypeParser(oid, format)) as CustomTypesConfig["getTypeParser"],
+};
+
 function getPool(): Pool {
   const url = runtimeEnv().DATABASE_URL;
   if (!url) throw new Error("DATABASE_URL is required for the Hostinger PostgreSQL runtime.");
@@ -55,6 +67,7 @@ function getPool(): Pool {
       connectionTimeoutMillis: 10_000,
       ssl: url.includes("localhost") ? false : { rejectUnauthorized: false },
       options: "-c search_path=jmr,public",
+      types: typeParsers,
     });
   }
   return pool;
