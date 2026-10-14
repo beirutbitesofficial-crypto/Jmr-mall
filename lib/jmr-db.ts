@@ -162,6 +162,20 @@ export async function initDatabase(): Promise<void> {
         phone text NOT NULL DEFAULT '', occupant text NOT NULL DEFAULT '', occupant_number text NOT NULL DEFAULT '',
         rent_start text NOT NULL DEFAULT '', rent_end text NOT NULL DEFAULT '', active integer NOT NULL DEFAULT 1,
         created_at bigint NOT NULL DEFAULT 0, updated_at bigint NOT NULL DEFAULT 0)`);
+      // Sign-in tables. Databases set up by hand may lack them, or lack sessions.client_fingerprint,
+      // which sign-in writes; without it every sign-in failed with a generic error.
+      await client.query(`CREATE TABLE IF NOT EXISTS users (
+        id text PRIMARY KEY NOT NULL, username text NOT NULL, name text NOT NULL,
+        role text NOT NULL CHECK (role IN ('owner','accountant','viewer')), active integer NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+        password_hash text NOT NULL, session_version integer NOT NULL DEFAULT 1, created_at text NOT NULL DEFAULT (now()::text))`);
+      await client.query("CREATE UNIQUE INDEX IF NOT EXISTS idx_jmr_users_username_nocase ON users ((lower(username)))");
+      await client.query(`CREATE TABLE IF NOT EXISTS sessions (
+        id text PRIMARY KEY NOT NULL, user_id text NOT NULL, session_version integer NOT NULL,
+        expires_at bigint NOT NULL, created_at bigint NOT NULL)`);
+      await client.query("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS client_fingerprint text");
+      await client.query(`CREATE TABLE IF NOT EXISTS auth_login_rate_limits (
+        client_key text PRIMARY KEY NOT NULL, failure_count integer NOT NULL DEFAULT 0,
+        window_started_at bigint NOT NULL, updated_at bigint NOT NULL)`);
     } finally { client.release(); }
   })().catch(error => { initialized = null; throw error; });
   return initialized;
