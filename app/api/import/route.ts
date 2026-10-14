@@ -1,6 +1,6 @@
 import * as XLSX from "xlsx";
 import { failure, jsonNoStore, requireSession, sameOrigin } from "@/lib/auth";
-import { getDb, initDatabase, transaction, type D1Database } from "@/lib/jmr-db";
+import { carryForwardRecordsSql, getDb, initDatabase, transaction, type D1Database } from "@/lib/jmr-db";
 import { assertJmr, JmrError, nextMonth, validDate } from "@/lib/jmr-core";
 
 export const dynamic = "force-dynamic";
@@ -281,14 +281,10 @@ async function ensureMonth(db: D1Database, month: string): Promise<void> {
   } else if (month > nextMonth(beirutMonth())) {
     throw new JmrError("ما فيك تستورد شهر بعد الشهر الجاي", 400);
   }
-  // A new month starts like "إنشاء الشهر": every active department carries its last reading forward.
+  // A new month starts like "إنشاء الشهر": every active department carries its last reading and rates forward.
   await db.batch([
     db.prepare("INSERT INTO month_status (month, locked) VALUES (?, 0)").bind(month),
-    db.prepare(`INSERT INTO monthly_records (month, department_id, previous_reading, current_reading, locked)
-      SELECT ?, d.id,
-        COALESCE((SELECT current_reading FROM monthly_records WHERE department_id=d.id AND month<? ORDER BY month DESC LIMIT 1),0),
-        COALESCE((SELECT current_reading FROM monthly_records WHERE department_id=d.id AND month<? ORDER BY month DESC LIMIT 1),0), 0
-      FROM departments d WHERE d.active=1`).bind(month, month, month),
+    db.prepare(carryForwardRecordsSql("d.active = 1")).bind(month, month),
     db.prepare(`INSERT OR IGNORE INTO record_meta (record_id, confirmed, revision)
       SELECT id, 0, 1 FROM monthly_records WHERE month = ?`).bind(month),
     db.prepare(`INSERT OR IGNORE INTO monthly_snapshots (record_id, meter_section, category, owner, phone, occupant, occupant_number, rent_start, rent_end)

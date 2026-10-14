@@ -132,7 +132,12 @@ test("accounting rules hold on a real PostgreSQL database", { skip: !url && "TES
     const importedA = after.records.find(record => record.month === next && record.meterSection === "A-1");
     assert.equal(importedA.previousReading, 100);
     assert.equal(importedA.currentReading, 180);
-    assert.equal(importedA.rent, 0);
+    assert.equal(importedA.rent, 100, "a negative rent cell is dropped and last month's rent stays");
+    // Rates carry over from the previous month for every shop, ready to edit before saving.
+    const carriedB = after.records.find(record => record.month === next && record.meterSection === "B-2");
+    assert.deepEqual([carriedB.meterFee, carriedB.kiloPrice, carriedB.rent, carriedB.services, carriedB.previousReading, carriedB.currentReading], [10, 0.5, 100, 20, 100, 100]);
+    const newC = after.records.find(record => record.month === next && record.meterSection === "C-3");
+    assert.equal(newC.meterFee, 0, "a new shop has no previous month to copy from");
     assert.equal(importedA.rentStart, "");
     assert.equal(after.months.filter(item => Number(item.locked) === 0).length, 1);
     assert.equal((await importFile(nextMonth(next), [["رقم العداد", "العداد الحالي"], ["A-1", 200]])).status, 409);

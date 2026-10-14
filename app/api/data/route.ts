@@ -5,7 +5,7 @@ import {
   type Actor, type AuditEntry, type Department, type MonthStatus, type MonthlyRecord,
   type Payment, type PaymentKind, type PublicUser, type Role,
 } from "@/lib/jmr-core";
-import { getDb, initDatabase } from "@/lib/jmr-db";
+import { carryForwardRecordsSql, getDb, initDatabase } from "@/lib/jmr-db";
 
 export const dynamic = "force-dynamic";
 
@@ -67,12 +67,7 @@ async function latestMonth(): Promise<MonthStatus | null> {
 async function syncDepartmentToMonth(departmentId: number, month: string): Promise<void> {
   const db = getDb();
   await db.batch([
-    db.prepare(`INSERT OR IGNORE INTO monthly_records (
-      month, department_id, previous_reading, current_reading, locked
-    ) SELECT ?, d.id,
-      COALESCE((SELECT current_reading FROM monthly_records WHERE department_id = d.id AND month < ? ORDER BY month DESC LIMIT 1), 0),
-      COALESCE((SELECT current_reading FROM monthly_records WHERE department_id = d.id AND month < ? ORDER BY month DESC LIMIT 1), 0), 0
-      FROM departments d WHERE d.id = ? AND d.active = 1`).bind(month, month, month, departmentId),
+    db.prepare(carryForwardRecordsSql("d.id = ? AND d.active = 1")).bind(month, month, departmentId),
     db.prepare(`INSERT OR IGNORE INTO record_meta (record_id, confirmed, revision)
       SELECT id, 0, 1 FROM monthly_records WHERE month = ? AND department_id = ?`).bind(month, departmentId),
     db.prepare(`INSERT OR IGNORE INTO monthly_snapshots (
@@ -201,11 +196,7 @@ export async function POST(request: Request) {
       assertJmr(Number(active?.count ?? 0) > 0, "أضف قسماً فعّالاً أولاً");
       await db.batch([
         db.prepare("INSERT INTO month_status (month, locked) VALUES (?, 0)").bind(month),
-        db.prepare(`INSERT INTO monthly_records (month, department_id, previous_reading, current_reading, locked)
-          SELECT ?, d.id,
-            COALESCE((SELECT current_reading FROM monthly_records WHERE department_id=d.id AND month<? ORDER BY month DESC LIMIT 1),0),
-            COALESCE((SELECT current_reading FROM monthly_records WHERE department_id=d.id AND month<? ORDER BY month DESC LIMIT 1),0), 0
-          FROM departments d WHERE d.active=1`).bind(month, month, month),
+        db.prepare(carryForwardRecordsSql("d.active = 1")).bind(month, month),
         db.prepare(`INSERT OR IGNORE INTO record_meta (record_id, confirmed, revision)
           SELECT id, 0, 1 FROM monthly_records WHERE month = ?`).bind(month),
         db.prepare(`INSERT OR IGNORE INTO monthly_snapshots (record_id, meter_section, category, owner, phone, occupant, occupant_number, rent_start, rent_end)
