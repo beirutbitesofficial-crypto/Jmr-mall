@@ -122,9 +122,12 @@ test("UI never exposes final invoices or collection before approval", async () =
 
 test("invoice labels remain compatible with printed forms", async () => {
   const source = await read("app/page.tsx");
-  for (const label of ["عداد / قسم", "اسم المستثمر", "رقم المستثمر", "قيمة الإيجار", "قيمة الخدمات", "المجموع", "العداد السابق", "العداد الحالي", "صرف العداد", "سعر الكيلو", "رسم العداد", "قيمة الاشتراك"]) {
+  // The mall's receipt form ("إيصال عن شهر"), as laid out in its Excel template.
+  for (const label of ["عداد / قسم", "اسم المستثمر", "رقم المستثمر", "العداد السابق", "العداد الحالي", "صرف عداد", "تكلفة الاشتراك", "تكلفة الخدمات", "المجموع($)"]) {
     assert.ok(source.includes(`>${label}<`), `Missing invoice label: ${label}`);
   }
+  assert.ok(source.includes("تكلفة الايجار عن شهر<"), "Missing invoice label: تكلفة الايجار عن شهر");
+  assert.ok(source.includes("إيصال عن شهر"), "Missing invoice title");
 });
 
 test("production headers and health endpoint exist", async () => {

@@ -197,6 +197,23 @@ td .primary,td .secondary,td .danger-button { min-height:34px; padding:0 12px; f
 .invoice-card p { margin:8px 0 0; }
 .invoice-balance { color:var(--muted); font-size:13px; }
 .invoice-note { margin:0; color:var(--muted); font-size:13px; }
+/* The mall's receipt strip (four per A4 page when printed). */
+.bill-grid { grid-template-columns:1fr; }
+.bill { background:var(--paper); border:1px solid var(--paper-line); padding:12px 14px; display:flex; flex-direction:column; gap:8px; break-inside:avoid; box-shadow:var(--shadow); }
+.bill-title { margin:0; text-align:center; font-size:15px; font-weight:700; }
+.bill-identity { display:grid; grid-template-columns:.8fr 1.6fr 1fr; background:var(--surface-3); border:1px solid var(--line-strong); }
+.bill-identity>div { padding:6px 10px; border-inline-start:1px solid var(--line-strong); min-width:0; }
+.bill-identity>div:first-child { border-inline-start:0; }
+.bill-identity span { display:block; color:var(--muted); font-size:11px; }
+.bill-identity strong { display:block; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.bill-table { width:100%; border-collapse:collapse; table-layout:fixed; text-align:center; }
+.bill-table th,.bill-table td { border:1px solid var(--line-strong); padding:6px 4px; }
+.bill-table th { font-size:12px; font-weight:700; background:var(--surface-3); vertical-align:top; }
+.bill-table td { font-size:15px; font-weight:600; height:34px; direction:ltr; font-variant-numeric:tabular-nums; }
+.bill-month { display:block; margin-top:4px; padding-top:3px; border-top:1px solid var(--line-strong); direction:ltr; font-weight:600; }
+.bill-table .bill-total { background:var(--gold-soft); color:var(--ink); }
+.bill-table td.bill-total { font-size:17px; font-weight:800; }
+.bill-foot { margin:0; color:var(--muted); font-size:11px; }
 .invoice-section-title { margin:12px 0 0; font-size:13px; font-weight:700; display:flex; align-items:baseline; gap:8px; }
 .invoice-section-title small { color:var(--muted); font-size:11px; font-weight:600; }
 .invoice-subtotal { display:flex; justify-content:space-between; align-items:center; margin:6px 2px 0!important; font-size:12px; color:var(--ink-2); }
@@ -289,6 +306,21 @@ td .primary,td .secondary,td .danger-button { min-height:34px; padding:0 12px; f
   .invoice-total span { font-size:8pt; }
   .invoice-total strong { font-size:10pt; }
   .invoice-balance { margin-top:1.5mm!important; font-size:7pt; }
+  /* Four receipts per A4 sheet: (297mm - 2×8mm margins - 3×4mm gaps) / 4 ≈ 67mm each. */
+  .bill-grid { display:block!important; }
+  .bill { height:66mm; box-sizing:border-box; margin:0 0 4mm; padding:3mm 4mm; gap:2mm; border:1px solid #555!important; box-shadow:none!important; overflow:hidden; }
+  .bill:nth-child(4n):not(:last-child) { break-after:page; margin-bottom:0; }
+  .bill:last-child { margin-bottom:0; }
+  .bill-title { font-size:11pt; }
+  .bill-identity span { font-size:6.5pt; }
+  .bill-identity strong { font-size:9pt; }
+  .bill-identity>div { padding:1mm 2mm; }
+  .bill-table { flex:1; }
+  .bill-table th { font-size:8pt; padding:1.5mm 1mm; }
+  .bill-table td { font-size:11pt; padding:1.5mm 1mm; }
+  .bill-table td.bill-total { font-size:12pt; }
+  .bill-identity,.bill-table th,.bill-table td { border-color:#777!important; }
+  .bill-foot { font-size:7pt; }
   .invoice-section-title { margin-top:2mm; font-size:8pt; }
   .invoice-section-title small { font-size:6.5pt; }
   .invoice-subtotal { margin-top:1mm!important; font-size:7pt; }

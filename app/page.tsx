@@ -384,7 +384,7 @@ export default function Home() {
 
         {page === "invoices" && <section className="invoice-page">
           <div className="invoice-controls"><p className="invoice-note">{t.invoices.combinedNote}</p><button className="primary" disabled={!invoicesReady || busy || formOpen} onClick={() => window.print()}>{t.invoices.print}</button></div>
-          {!invoicesReady ? <div className="empty"><h3>{t.invoices.lockedTitle}</h3><p>{t.invoices.lockedBody}</p></div> : <div className="invoice-grid" dir="rtl" lang="ar">{currentRecords.map(record => <MonthlyInvoice key={record.id} month={month} record={record} paidRent={paidFor(record.id, "rent")} paidElectricity={paidFor(record.id, "electricity")} />)}</div>}
+          {!invoicesReady ? <div className="empty"><h3>{t.invoices.lockedTitle}</h3><p>{t.invoices.lockedBody}</p></div> : <div className="invoice-grid bill-grid" dir="rtl" lang="ar">{currentRecords.map(record => <MonthlyInvoice key={record.id} month={month} record={record} />)}</div>}
         </section>}
 
         {page === "payments" && <><section className="panel"><div className="panel-head"><div><h2>{t.payments.title}</h2><p>{t.payments.subtitle}</p></div></div>{!invoicesReady ? <div className="empty">{t.payments.locked}</div> : <div className="table-wrap"><table><thead><tr><th>{t.payments.cols.section}</th><th>{t.payments.cols.invoice}</th><th>{t.payments.cols.due}</th><th>{t.payments.cols.paid}</th><th>{t.payments.cols.remaining}</th><th>{t.payments.cols.action}</th></tr></thead><tbody>{currentRecords.flatMap(record => (record.hasRent === 0 ? ["electricity"] as const : ["rent", "electricity"] as const).map(kind => {
@@ -467,21 +467,21 @@ function InvoiceHeader({ title, month }: { title: string; month: string }) {
 function InvoiceIdentity({ record }: { record: MonthlyRecord }) {
   return <div className="invoice-identity"><div><span>عداد / قسم</span><strong>{record.meterSection}</strong></div><div><span>اسم المستثمر</span><strong>{record.occupant}</strong></div><div><span>رقم المستثمر</span><strong>{record.occupantNumber || "—"}</strong></div></div>;
 }
-// One invoice per shop: electricity for the month just read, and rent + services for the month
-// after it (rent is paid in advance). Electricity-only shops show no rent part.
-function MonthlyInvoice({ month, record, paidRent, paidElectricity }: { month: string; record: MonthlyRecord; paidRent: number; paidElectricity: number }) {
+// The mall's printed receipt, one strip per shop, four to an A4 page: electricity for the month
+// that was read, and rent + services for the month after it (rent is paid in advance).
+// Electricity-only shops show "—" for rent and services.
+const slashMonth = (value: string) => { const [year, monthNumber] = value.split("-"); return `${Number(monthNumber)}/${year}`; };
+function MonthlyInvoice({ month, record }: { month: string; record: MonthlyRecord }) {
   const { usage, electricity, rent } = recordCharges(record);
   const hasRent = record.hasRent !== 0;
   const total = roundedMoney(electricity + (hasRent ? rent : 0));
-  const paid = roundedMoney(paidElectricity + (hasRent ? paidRent : 0));
-  return <article className="invoice-card combined-invoice"><InvoiceHeader title={hasRent ? "فاتورة الإيجار والكهرباء" : "فاتورة الكهرباء"} month={month} /><InvoiceIdentity record={record} />
-    <h3 className="invoice-section-title">الكهرباء <small>عن شهر {monthLabel(month)}</small></h3>
-    <div className="invoice-values electricity-values"><div><span>العداد السابق</span><strong>{record.previousReading}</strong></div><div><span>العداد الحالي</span><strong>{record.currentReading}</strong></div><div><span>صرف العداد</span><strong>{usage}</strong></div><div><span>سعر الكيلو</span><strong>{currency.format(record.kiloPrice)}</strong></div><div><span>رسم العداد</span><strong>{currency.format(record.meterFee)}</strong></div></div>
-    <p className="invoice-subtotal"><span>قيمة الاشتراك</span><strong>{currency.format(electricity)}</strong></p>
-    {hasRent && <><h3 className="invoice-section-title">الإيجار والخدمات <small>عن شهر {monthLabel(nextMonth(month))}</small></h3>
-      <div className="invoice-values two-values"><div><span>قيمة الإيجار</span><strong>{currency.format(record.rent)}</strong></div><div><span>قيمة الخدمات</span><strong>{currency.format(record.services)}</strong></div></div>
-      <p className="invoice-subtotal"><span>مجموع الإيجار والخدمات</span><strong>{currency.format(rent)}</strong></p></>}
-    <footer className="invoice-total"><span>المجموع</span><strong>{currency.format(total)}</strong></footer><p className="invoice-balance">المدفوع: <bdi>{currency.format(paid)}</bdi> · المتبقي: <strong><bdi>{currency.format(roundedMoney(total - paid))}</bdi></strong></p></article>;
+  return <article className="bill">
+    <h3 className="bill-title">إيصال عن شهر <bdi>{slashMonth(month)}</bdi></h3>
+    <div className="bill-identity"><div><span>عداد / قسم</span><strong>{record.meterSection}</strong></div><div><span>اسم المستثمر</span><strong>{record.occupant}</strong></div><div><span>رقم المستثمر</span><strong>{record.occupantNumber || "—"}</strong></div></div>
+    <table className="bill-table"><thead><tr><th>العداد السابق</th><th>العداد الحالي</th><th>صرف عداد</th><th>تكلفة الايجار عن شهر<span className="bill-month">{slashMonth(nextMonth(month))}</span></th><th>تكلفة الاشتراك</th><th>تكلفة الخدمات</th><th className="bill-total">المجموع($)</th></tr></thead>
+      <tbody><tr><td>{record.previousReading}</td><td>{record.currentReading}</td><td>{usage}</td><td>{hasRent ? currency.format(record.rent) : "—"}</td><td>{currency.format(electricity)}</td><td>{hasRent ? currency.format(record.services) : "—"}</td><td className="bill-total">{currency.format(total)}</td></tr></tbody></table>
+    <p className="bill-foot">سعر الكيلو <bdi>{currency.format(record.kiloPrice)}</bdi> · رسم العداد <bdi>{currency.format(record.meterFee)}</bdi></p>
+  </article>;
 }
 function Receipt({ payment, record }: { payment: Payment; record: MonthlyRecord }) {
   return <article className="invoice-card receipt-card"><InvoiceHeader title="إيصال قبض" month={record.month} /><p className="receipt-id">رقم الإيصال: {payment.id}</p><InvoiceIdentity record={record} /><p>نوع الفاتورة: {payment.kind === "rent" ? "الإيجار والخدمات" : "الكهرباء"}</p><footer className="invoice-total"><span>المبلغ المقبوض</span><strong>{currency.format(payment.amount)}</strong></footer><p>التاريخ: {payment.paidAt} · المحصّل: {payment.receivedBy}</p>{payment.note && <p>{payment.note}</p>}{payment.voidedAt && <p className="error-text">إيصال معكوس — {payment.voidReason} — بواسطة {payment.voidedBy}</p>}</article>;
