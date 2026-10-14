@@ -18,6 +18,8 @@ export type Department = {
   rentStart: string;
   rentEnd: string;
   active: number;
+  /** 1 = pays rent and services; 0 = electricity only. */
+  hasRent: number;
 };
 
 export type MonthlyRecord = {
@@ -40,6 +42,8 @@ export type MonthlyRecord = {
   occupantNumber: string;
   rentStart: string;
   rentEnd: string;
+  /** From the month's snapshot: 0 = electricity only, so rent and services are always 0. */
+  hasRent: number;
 };
 
 export type MonthStatus = {

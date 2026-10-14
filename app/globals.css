@@ -196,6 +196,11 @@ td .primary,td .secondary,td .danger-button { min-height:34px; padding:0 12px; f
 .invoice-total strong { font-size:18px; direction:ltr; font-variant-numeric:tabular-nums; }
 .invoice-card p { margin:8px 0 0; }
 .invoice-balance { color:var(--muted); font-size:13px; }
+.invoice-note { margin:0; color:var(--muted); font-size:13px; }
+.invoice-section-title { margin:12px 0 0; font-size:13px; font-weight:700; display:flex; align-items:baseline; gap:8px; }
+.invoice-section-title small { color:var(--muted); font-size:11px; font-weight:600; }
+.invoice-subtotal { display:flex; justify-content:space-between; align-items:center; margin:6px 2px 0!important; font-size:12px; color:var(--ink-2); }
+.invoice-subtotal strong { direction:ltr; font-variant-numeric:tabular-nums; color:var(--ink); }
 .invoice-balance strong { color:var(--ink); }
 .receipt-card { max-width:720px; }
 .receipt-card .receipt-id { margin:10px 0 0; }
@@ -284,6 +289,9 @@ td .primary,td .secondary,td .danger-button { min-height:34px; padding:0 12px; f
   .invoice-total span { font-size:8pt; }
   .invoice-total strong { font-size:10pt; }
   .invoice-balance { margin-top:1.5mm!important; font-size:7pt; }
+  .invoice-section-title { margin-top:2mm; font-size:8pt; }
+  .invoice-section-title small { font-size:6.5pt; }
+  .invoice-subtotal { margin-top:1mm!important; font-size:7pt; }
   .printing-receipt .workspace { display:none!important; }
   .printing-receipt .receipt-print { display:block!important; }
   .printing-receipt .receipt-card { margin:0 auto; font-size:11pt; }
