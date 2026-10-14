@@ -10,7 +10,7 @@ import { carryForwardRecordsSql, getDb, initDatabase } from "@/lib/jmr-db";
 export const dynamic = "force-dynamic";
 
 type Input = Record<string, unknown>;
-type ExistingRecord = { id: number; month: string; departmentId: number; revision: number };
+type ExistingRecord = { id: number; month: string; departmentId: number; revision: number; hasRent: number };
 
 function auditStatement(actor: Actor, action: string, detail: string) {
   return getDb().prepare(`INSERT INTO audit_log (id, created_at, user_id, actor_name, action, detail)
@@ -33,6 +33,8 @@ function departmentInput(value: unknown): Omit<Department, "id"> {
   const rentEnd = optionalDate(source.rentEnd);
   assertJmr(!rentStart || !rentEnd || rentEnd >= rentStart, "تاريخ انتهاء الإيجار لازم يكون بعد تاريخ البدء");
   assertJmr(source.active === 0 || source.active === 1, "حالة القسم غير صالحة");
+  // Older pages do not send it; a shop pays rent unless marked electricity-only.
+  assertJmr(source.hasRent === undefined || source.hasRent === 0 || source.hasRent === 1, "نوع الاشتراك غير صالح");
   return {
     meterSection: cleanText(source.meterSection, 80, true),
     category: cleanText(source.category, 120, true),
@@ -43,6 +45,7 @@ function departmentInput(value: unknown): Omit<Department, "id"> {
     rentStart,
     rentEnd,
     active: source.active,
+    hasRent: source.hasRent === 0 ? 0 : 1,
   };
 }
 
@@ -71,8 +74,8 @@ async function syncDepartmentToMonth(departmentId: number, month: string): Promi
     db.prepare(`INSERT OR IGNORE INTO record_meta (record_id, confirmed, revision)
       SELECT id, 0, 1 FROM monthly_records WHERE month = ? AND department_id = ?`).bind(month, departmentId),
     db.prepare(`INSERT OR IGNORE INTO monthly_snapshots (
-      record_id, meter_section, category, owner, phone, occupant, occupant_number, rent_start, rent_end
-    ) SELECT r.id, d.meter_section, d.category, d.owner, d.phone, d.occupant, d.occupant_number, d.rent_start, d.rent_end
+      record_id, meter_section, category, owner, phone, occupant, occupant_number, rent_start, rent_end, has_rent
+    ) SELECT r.id, d.meter_section, d.category, d.owner, d.phone, d.occupant, d.occupant_number, d.rent_start, d.rent_end, d.has_rent
       FROM monthly_records r JOIN departments d ON d.id = r.department_id
       WHERE r.month = ? AND r.department_id = ?`).bind(month, departmentId),
   ]);
@@ -85,13 +88,13 @@ export async function GET(request: Request) {
     const db = getDb();
     const [departments, records, months, payments] = await Promise.all([
       db.prepare(`SELECT id, meter_section AS meterSection, category, owner, phone, occupant,
-        occupant_number AS occupantNumber, rent_start AS rentStart, rent_end AS rentEnd, active
+        occupant_number AS occupantNumber, rent_start AS rentStart, rent_end AS rentEnd, active, has_rent AS hasRent
         FROM departments ORDER BY meter_section`).all<Department>(),
       db.prepare(`SELECT r.id, r.month, r.department_id AS departmentId, r.meter_fee AS meterFee,
         r.kilo_price AS kiloPrice, r.rent, r.services, r.previous_reading AS previousReading,
         r.current_reading AS currentReading, m.confirmed, m.revision,
         s.meter_section AS meterSection, s.category, s.owner, s.phone, s.occupant,
-        s.occupant_number AS occupantNumber, s.rent_start AS rentStart, s.rent_end AS rentEnd
+        s.occupant_number AS occupantNumber, s.rent_start AS rentStart, s.rent_end AS rentEnd, s.has_rent AS hasRent
         FROM monthly_records r JOIN record_meta m ON m.record_id = r.id
         JOIN monthly_snapshots s ON s.record_id = r.id
         ORDER BY r.month DESC, s.meter_section`).all<MonthlyRecord>(),
@@ -149,10 +152,10 @@ export async function POST(request: Request) {
       const monthRow = month ? await db.prepare("SELECT locked FROM month_status WHERE month = ?").bind(month).first<{ locked: number }>() : null;
 
       await db.batch([
-        db.prepare(`INSERT INTO departments (meter_section, category, owner, phone, occupant, occupant_number, rent_start, rent_end, active)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        db.prepare(`INSERT INTO departments (meter_section, category, owner, phone, occupant, occupant_number, rent_start, rent_end, active, has_rent)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
           .bind(department.meterSection, department.category, department.owner, department.phone, department.occupant,
-            department.occupantNumber, department.rentStart, department.rentEnd, department.active),
+            department.occupantNumber, department.rentStart, department.rentEnd, department.active, department.hasRent),
         auditStatement(actor, "addDepartment", `إضافة القسم ${department.meterSection}`),
       ]);
       const inserted = await db.prepare(`SELECT id FROM departments WHERE lower(trim(meter_section)) = lower(trim(?)) ORDER BY id DESC LIMIT 1`)
@@ -172,9 +175,21 @@ export async function POST(request: Request) {
       assertJmr(!duplicate, "عداد / قسم مسجّل مسبقاً", 409);
       await db.batch([
         db.prepare(`UPDATE departments SET meter_section=?, category=?, owner=?, phone=?, occupant=?, occupant_number=?,
-          rent_start=?, rent_end=?, active=? WHERE id=?`)
+          rent_start=?, rent_end=?, active=?, has_rent=? WHERE id=?`)
           .bind(department.meterSection, department.category, department.owner, department.phone, department.occupant,
-            department.occupantNumber, department.rentStart, department.rentEnd, department.active, id),
+            department.occupantNumber, department.rentStart, department.rentEnd, department.active, department.hasRent, id),
+        // The rent setting also applies to the open month (approved months keep theirs). Switching a
+        // shop to electricity-only clears that month's rent and services, so the row needs saving again.
+        db.prepare(`UPDATE monthly_snapshots SET has_rent=? WHERE record_id IN (
+          SELECT r.id FROM monthly_records r JOIN month_status ms ON ms.month=r.month WHERE r.department_id=? AND ms.locked=0)`)
+          .bind(department.hasRent, id),
+        db.prepare(`UPDATE record_meta SET confirmed=0, revision=revision+1 WHERE ?=0 AND record_id IN (
+          SELECT r.id FROM monthly_records r JOIN month_status ms ON ms.month=r.month
+          WHERE r.department_id=? AND ms.locked=0 AND (r.rent<>0 OR r.services<>0))`)
+          .bind(department.hasRent, id),
+        db.prepare(`UPDATE monthly_records SET rent=0, services=0 WHERE ?=0 AND department_id=?
+          AND month IN (SELECT month FROM month_status WHERE locked=0) AND (rent<>0 OR services<>0)`)
+          .bind(department.hasRent, id),
         auditStatement(actor, "updateDepartment", `تعديل القسم ${department.meterSection}. الفواتير السابقة بقيت بنسختها المحفوظة.`),
       ]);
       return jsonNoStore({ ok: true, message: "تم تعديل القسم بدون تغيير الفواتير القديمة" });
@@ -199,8 +214,8 @@ export async function POST(request: Request) {
         db.prepare(carryForwardRecordsSql("d.active = 1")).bind(month, month),
         db.prepare(`INSERT OR IGNORE INTO record_meta (record_id, confirmed, revision)
           SELECT id, 0, 1 FROM monthly_records WHERE month = ?`).bind(month),
-        db.prepare(`INSERT OR IGNORE INTO monthly_snapshots (record_id, meter_section, category, owner, phone, occupant, occupant_number, rent_start, rent_end)
-          SELECT r.id,d.meter_section,d.category,d.owner,d.phone,d.occupant,d.occupant_number,d.rent_start,d.rent_end
+        db.prepare(`INSERT OR IGNORE INTO monthly_snapshots (record_id, meter_section, category, owner, phone, occupant, occupant_number, rent_start, rent_end, has_rent)
+          SELECT r.id,d.meter_section,d.category,d.owner,d.phone,d.occupant,d.occupant_number,d.rent_start,d.rent_end,d.has_rent
           FROM monthly_records r JOIN departments d ON d.id=r.department_id WHERE r.month=?`).bind(month),
         auditStatement(actor, "createMonth", `إنشاء شهر ${month}`),
       ]);
@@ -226,8 +241,9 @@ export async function POST(request: Request) {
       const expectedRevision = positiveId(body.expectedRevision);
       assertJmr(body.record && typeof body.record === "object" && !Array.isArray(body.record), "بيانات السجل غير صالحة");
       const input = body.record as Input;
-      const existing = await db.prepare(`SELECT r.id, r.month, r.department_id AS departmentId, m.revision
-        FROM monthly_records r JOIN record_meta m ON m.record_id=r.id WHERE r.id=?`).bind(id).first<ExistingRecord>();
+      const existing = await db.prepare(`SELECT r.id, r.month, r.department_id AS departmentId, m.revision, s.has_rent AS hasRent
+        FROM monthly_records r JOIN record_meta m ON m.record_id=r.id JOIN monthly_snapshots s ON s.record_id=r.id
+        WHERE r.id=?`).bind(id).first<ExistingRecord>();
       assertJmr(existing, "السجل غير موجود", 404);
       const latest = await latestMonth();
       assertJmr(latest?.month === existing.month && Number(latest.locked) === 0, "التعديل متاح لآخر شهر مفتوح فقط. الأشهر السابقة أرشيف ثابت.", 409);
@@ -235,8 +251,10 @@ export async function POST(request: Request) {
 
       const meterFee = nonNegativeNumber(input.meterFee);
       const kiloPrice = nonNegativeNumber(input.kiloPrice, 1_000_000);
-      const rent = nonNegativeNumber(input.rent);
-      const services = nonNegativeNumber(input.services);
+      // Electricity-only shops never carry rent or services.
+      const hasRent = Number(existing.hasRent) === 1;
+      const rent = hasRent ? nonNegativeNumber(input.rent) : 0;
+      const services = hasRent ? nonNegativeNumber(input.services) : 0;
       const currentReading = nonNegativeNumber(input.currentReading, 10_000_000_000);
       const requestedPrevious = nonNegativeNumber(input.previousReading, 10_000_000_000);
       const prior = await db.prepare(`SELECT current_reading AS currentReading FROM monthly_records

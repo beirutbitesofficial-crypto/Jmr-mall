@@ -186,6 +186,10 @@ export async function initDatabase(): Promise<void> {
         id text PRIMARY KEY NOT NULL, user_id text NOT NULL, session_version integer NOT NULL,
         expires_at bigint NOT NULL, created_at bigint NOT NULL)`);
       await client.query("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS client_fingerprint text");
+      // Shops that pay electricity only (no rent or services). Kept on the month snapshot too, so an
+      // approved month's invoices keep the setting they were issued with.
+      await client.query("ALTER TABLE departments ADD COLUMN IF NOT EXISTS has_rent integer NOT NULL DEFAULT 1");
+      await client.query("ALTER TABLE IF EXISTS monthly_snapshots ADD COLUMN IF NOT EXISTS has_rent integer NOT NULL DEFAULT 1");
       await client.query(`CREATE TABLE IF NOT EXISTS auth_login_rate_limits (
         client_key text PRIMARY KEY NOT NULL, failure_count integer NOT NULL DEFAULT 0,
         window_started_at bigint NOT NULL, updated_at bigint NOT NULL)`);
@@ -214,13 +218,16 @@ export async function audit(actor: Actor, action: string, entityType: string, en
 
 // A new month row for each matching department starts from that department's last month:
 // previous reading = last current reading, and the rates (meter fee, kWh price, rent, services)
-// copied over. Everything stays editable; the row still has to be saved before approval.
+// copied over (rent and services stay 0 for electricity-only shops). Everything stays editable;
+// the row still has to be saved before approval.
 // Binds: month, month, then whatever `where` needs.
 export function carryForwardRecordsSql(where: string): string {
   return `INSERT OR IGNORE INTO monthly_records (
       month, department_id, previous_reading, current_reading, meter_fee, kilo_price, rent, services, locked
     ) SELECT ?, d.id, COALESCE(p.current_reading, 0), COALESCE(p.current_reading, 0),
-      COALESCE(p.meter_fee, 0), COALESCE(p.kilo_price, 0), COALESCE(p.rent, 0), COALESCE(p.services, 0), 0
+      COALESCE(p.meter_fee, 0), COALESCE(p.kilo_price, 0),
+      CASE WHEN d.has_rent = 1 THEN COALESCE(p.rent, 0) ELSE 0 END,
+      CASE WHEN d.has_rent = 1 THEN COALESCE(p.services, 0) ELSE 0 END, 0
     FROM departments d
     LEFT JOIN LATERAL (
       SELECT current_reading, meter_fee, kilo_price, rent, services FROM monthly_records

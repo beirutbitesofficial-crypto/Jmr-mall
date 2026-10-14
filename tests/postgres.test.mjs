@@ -155,6 +155,25 @@ test("accounting rules hold on a real PostgreSQL database", { skip: !url && "TES
     assert.equal((await search("%")).length, 0);
     assert.ok((await search("a-1")).length >= 2);
 
+    // ---- Electricity-only shops: no rent or services, ever ----
+    await ok({ action: "addDepartment", month: next, department: { ...department, meterSection: "E-5", hasRent: 0 } });
+    await ok({ action: "addDepartment", department: { ...department, meterSection: "Z-9", hasRent: 2 } }, 400);
+    let electricityOnly = (await state()).records.find(record => record.month === next && record.meterSection === "E-5");
+    assert.equal(electricityOnly.hasRent, 0);
+    await ok({ action: "updateRecord", id: electricityOnly.id, expectedRevision: electricityOnly.revision,
+      record: { meterFee: 5, kiloPrice: 0.5, rent: 100, services: 20, previousReading: 0, currentReading: 10 } });
+    electricityOnly = (await state()).records.find(record => record.id === electricityOnly.id);
+    assert.deepEqual([electricityOnly.rent, electricityOnly.services, electricityOnly.meterFee], [0, 0, 5], "rent and services are not charged");
+    // Switching a shop to electricity-only clears the open month's rent; that row must be saved again.
+    const shopB = (await state()).departments.find(item => item.meterSection === "B-2");
+    await ok({ action: "updateDepartment", id: shopB.id, department: { ...shopB, hasRent: 0 } });
+    const after2 = await state();
+    const openB = after2.records.find(record => record.month === next && record.meterSection === "B-2");
+    assert.deepEqual([openB.hasRent, openB.rent, openB.services, openB.confirmed], [0, 0, 0, 0]);
+    const approvedB = after2.records.find(record => record.month === month && record.meterSection === "B-2");
+    assert.deepEqual([approvedB.hasRent, approvedB.rent], [1, 100], "the approved month keeps its invoice");
+    assert.equal(after2.departments.find(item => item.id === shopB.id).hasRent, 0);
+
     // Behind Hostinger's proxy the request URL is internal; the Host header identifies the site.
     const proxied = new Request("http://127.0.0.1:3000/api/data", { method: "POST", headers: { origin, host: "mall.example", "content-type": "application/json", cookie }, body: JSON.stringify({ action: "none" }) });
     assert.notEqual((await data.POST(proxied)).status, 403);

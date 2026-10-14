@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  isRecordReady, recordCharges, roundedMoney,
+  isRecordReady, nextMonth, recordCharges, roundedMoney,
   type Actor, type AuditEntry, type Department, type MonthStatus, type MonthlyRecord,
   type Payment, type PaymentKind, type PublicUser, type Role,
 } from "@/lib/jmr-core";
@@ -30,7 +30,7 @@ type PaymentDraft = { recordId: number; kind: PaymentKind; amount: string; paidA
 const pages: Page[] = ["audit", "departments", "invoices", "payments", "users", "history"];
 const emptyDepartment: DepartmentDraft = {
   meterSection: "", category: "", owner: "", phone: "", occupant: "", occupantNumber: "",
-  rentStart: "", rentEnd: "", active: 1,
+  rentStart: "", rentEnd: "", active: 1, hasRent: 1,
 };
 const currency = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
 // Printed invoices and receipts are the mall's Arabic forms, so their month label stays Arabic.
@@ -74,7 +74,6 @@ export default function Home() {
   const [voidEdit, setVoidEdit] = useState<{ id: string; reason: string } | null>(null);
   const [userEdit, setUserEdit] = useState<UserDraft | null>(null);
   const [receipt, setReceipt] = useState<Payment | null>(null);
-  const [invoiceFilter, setInvoiceFilter] = useState<"all" | "rent" | "electricity">("all");
   const timer = useRef<number | null>(null);
   const mutex = useRef(false);
   const initialMonthResolved = useRef(false);
@@ -276,6 +275,7 @@ export default function Home() {
       rentStart: String(department.rentStart ?? ""),
       rentEnd: String(department.rentEnd ?? ""),
       active: Number(department.active) === 1 ? 1 : 0,
+      hasRent: Number(department.hasRent) === 0 ? 0 : 1,
     } });
   }
 
@@ -356,6 +356,7 @@ export default function Home() {
             const dirty = Boolean(rowDrafts[record.id]);
             const hasPrior = data.records.some(item => item.departmentId === record.departmentId && item.month < record.month);
             const cell = (field: keyof RecordDraft, step = "0.01") => {
+              if ((field === "rent" || field === "services") && record.hasRent === 0) return <td className="num muted" title={t.departments.electricityOnly}>—</td>;
               const editable = editableMonth && !(field === "previousReading" && hasPrior);
               if (!editable) return <td className="num">{field === "meterFee" || field === "kiloPrice" || field === "rent" || field === "services" ? currency.format(Number(record[field])) : Number(record[field])}</td>;
               return <td><input className="cell-input" type="number" inputMode="decimal" min="0" step={step} disabled={busy || stale} aria-label={`${t.audit.cols[field]} — ${record.meterSection}`} value={rowDrafts[record.id]?.[field] ?? String(record[field])} onChange={event => editCell(record, field, event.target.value)} /></td>;
@@ -378,20 +379,15 @@ export default function Home() {
 
         {page === "departments" && <section className="panel">
           <div className="panel-head"><div><h2>{t.departments.title}</h2><p>{t.departments.subtitle}</p></div>{writer && <button className="primary" disabled={disabled} onClick={() => setDepartmentEdit({ draft: { ...emptyDepartment } })}>{t.departments.add}</button>}</div>
-          <div className="table-wrap"><table><thead><tr><th>{t.departments.cols.section}</th><th>{t.departments.cols.category}</th><th>{t.departments.cols.owner}</th><th>{t.departments.cols.occupant}</th><th>{t.departments.cols.contract}</th><th>{t.departments.cols.status}</th><th>{t.departments.cols.action}</th></tr></thead><tbody>{data.departments.map(department => <tr key={department.id}><td><strong>{department.meterSection}</strong></td><td>{department.category}</td><td>{department.owner}<small>{department.phone}</small></td><td>{department.occupant}<small>{department.occupantNumber}</small></td><td>{department.rentStart || "—"}<small>{department.rentEnd || "—"}</small></td><td><span className={`badge ${department.active ? "done" : "muted"}`}>{department.active ? t.departments.active : t.departments.archived}</span></td><td>{writer && <button className="secondary" disabled={disabled} onClick={() => startDepartment(department)}>{t.departments.edit}</button>}</td></tr>)}</tbody></table></div>
+          <div className="table-wrap"><table><thead><tr><th>{t.departments.cols.section}</th><th>{t.departments.cols.category}</th><th>{t.departments.cols.owner}</th><th>{t.departments.cols.occupant}</th><th>{t.departments.cols.contract}</th><th>{t.departments.cols.status}</th><th>{t.departments.cols.action}</th></tr></thead><tbody>{data.departments.map(department => <tr key={department.id}><td><strong>{department.meterSection}</strong></td><td>{department.category}</td><td>{department.owner}<small>{department.phone}</small></td><td>{department.occupant}<small>{department.occupantNumber}</small></td><td>{department.rentStart || "—"}<small>{department.rentEnd || "—"}</small></td><td><span className={`badge ${department.active ? "done" : "muted"}`}>{department.active ? t.departments.active : t.departments.archived}</span>{department.hasRent === 0 && <small>{t.departments.electricityOnly}</small>}</td><td>{writer && <button className="secondary" disabled={disabled} onClick={() => startDepartment(department)}>{t.departments.edit}</button>}</td></tr>)}</tbody></table></div>
         </section>}
 
         {page === "invoices" && <section className="invoice-page">
-          <div className="invoice-controls"><div className="invoice-filter" role="group" aria-label={t.invoices.filter}>{(["all", "rent", "electricity"] as const).map(kind => <button key={kind} className={invoiceFilter === kind ? "active" : ""} aria-pressed={invoiceFilter === kind} onClick={() => setInvoiceFilter(kind)}>{t.invoices[kind]}</button>)}</div><button className="primary" disabled={!invoicesReady || busy || formOpen} onClick={() => window.print()}>{t.invoices.print}</button></div>
-          {!invoicesReady ? <div className="empty"><h3>{t.invoices.lockedTitle}</h3><p>{t.invoices.lockedBody}</p></div> : <div className="invoice-grid" dir="rtl" lang="ar">{currentRecords.flatMap(record => {
-            const cards = [];
-            if (invoiceFilter === "all" || invoiceFilter === "rent") cards.push(<RentInvoice key={`rent-${record.id}`} month={month} record={record} paid={paidFor(record.id, "rent")} />);
-            if (invoiceFilter === "all" || invoiceFilter === "electricity") cards.push(<ElectricityInvoice key={`electricity-${record.id}`} month={month} record={record} paid={paidFor(record.id, "electricity")} />);
-            return cards;
-          })}</div>}
+          <div className="invoice-controls"><p className="invoice-note">{t.invoices.combinedNote}</p><button className="primary" disabled={!invoicesReady || busy || formOpen} onClick={() => window.print()}>{t.invoices.print}</button></div>
+          {!invoicesReady ? <div className="empty"><h3>{t.invoices.lockedTitle}</h3><p>{t.invoices.lockedBody}</p></div> : <div className="invoice-grid" dir="rtl" lang="ar">{currentRecords.map(record => <MonthlyInvoice key={record.id} month={month} record={record} paidRent={paidFor(record.id, "rent")} paidElectricity={paidFor(record.id, "electricity")} />)}</div>}
         </section>}
 
-        {page === "payments" && <><section className="panel"><div className="panel-head"><div><h2>{t.payments.title}</h2><p>{t.payments.subtitle}</p></div></div>{!invoicesReady ? <div className="empty">{t.payments.locked}</div> : <div className="table-wrap"><table><thead><tr><th>{t.payments.cols.section}</th><th>{t.payments.cols.invoice}</th><th>{t.payments.cols.due}</th><th>{t.payments.cols.paid}</th><th>{t.payments.cols.remaining}</th><th>{t.payments.cols.action}</th></tr></thead><tbody>{currentRecords.flatMap(record => (["rent", "electricity"] as const).map(kind => {
+        {page === "payments" && <><section className="panel"><div className="panel-head"><div><h2>{t.payments.title}</h2><p>{t.payments.subtitle}</p></div></div>{!invoicesReady ? <div className="empty">{t.payments.locked}</div> : <div className="table-wrap"><table><thead><tr><th>{t.payments.cols.section}</th><th>{t.payments.cols.invoice}</th><th>{t.payments.cols.due}</th><th>{t.payments.cols.paid}</th><th>{t.payments.cols.remaining}</th><th>{t.payments.cols.action}</th></tr></thead><tbody>{currentRecords.flatMap(record => (record.hasRent === 0 ? ["electricity"] as const : ["rent", "electricity"] as const).map(kind => {
           const due = recordCharges(record)[kind]; const paid = paidFor(record.id, kind); const balance = roundedMoney(due - paid);
           return <tr key={`${record.id}-${kind}`}><td><strong>{record.meterSection}</strong><small>{record.occupant}</small></td><td>{kind === "rent" ? t.payments.rentKind : t.payments.electricityKind}</td><td className="num">{currency.format(due)}</td><td className="num">{currency.format(paid)}</td><td className="num strong">{currency.format(balance)}</td><td>{writer && balance > 0 && <button className="primary" disabled={disabled} onClick={() => setPaymentEdit({ recordId: record.id, kind, amount: balance.toFixed(2), paidAt: today(), note: "", requestId: crypto.randomUUID() })}>{t.payments.record}</button>}</td></tr>;
         }))}</tbody></table></div>}</section><section className="panel spaced"><div className="panel-head"><h2>{t.payments.receipts(monthPayments.length)}</h2></div><div className="table-wrap"><table><thead><tr><th>{t.payments.receiptCols.id}</th><th>{t.payments.receiptCols.section}</th><th>{t.payments.receiptCols.amount}</th><th>{t.payments.receiptCols.by}</th><th>{t.payments.receiptCols.status}</th><th>{t.payments.receiptCols.action}</th></tr></thead><tbody>{monthPayments.map(payment => {
@@ -415,7 +411,8 @@ export default function Home() {
         <Field label={t.departments.fields.occupantNumber} value={departmentEdit.draft.occupantNumber} onChange={value => setDepartmentEdit({ ...departmentEdit, draft: { ...departmentEdit.draft, occupantNumber: value } })} />
         <Field label={t.departments.fields.rentStart} type="date" value={departmentEdit.draft.rentStart} onChange={value => setDepartmentEdit({ ...departmentEdit, draft: { ...departmentEdit.draft, rentStart: value } })} />
         <Field label={t.departments.fields.rentEnd} type="date" value={departmentEdit.draft.rentEnd} onChange={value => setDepartmentEdit({ ...departmentEdit, draft: { ...departmentEdit.draft, rentEnd: value } })} />
-      </div><label className="check-field"><input type="checkbox" checked={departmentEdit.draft.active === 1} onChange={event => setDepartmentEdit({ ...departmentEdit, draft: { ...departmentEdit.draft, active: event.target.checked ? 1 : 0 } })} />{t.departments.activeCheck}</label><SaveButton busy={busy} label={t.save} busyLabel={t.saving} /></form></Modal>}
+      </div><label className="check-field"><input type="checkbox" checked={departmentEdit.draft.hasRent === 1} onChange={event => setDepartmentEdit({ ...departmentEdit, draft: { ...departmentEdit.draft, hasRent: event.target.checked ? 1 : 0 } })} />{t.departments.hasRentCheck}</label>
+      <p className="field-hint">{t.departments.hasRentHint}</p><label className="check-field"><input type="checkbox" checked={departmentEdit.draft.active === 1} onChange={event => setDepartmentEdit({ ...departmentEdit, draft: { ...departmentEdit.draft, active: event.target.checked ? 1 : 0 } })} />{t.departments.activeCheck}</label><SaveButton busy={busy} label={t.save} busyLabel={t.saving} /></form></Modal>}
 
       {paymentEdit && <Modal title={t.payments.newTitle} busy={busy} closeLabel={t.close} onClose={() => setPaymentEdit(null)}><form onSubmit={savePayment}><Field label={t.payments.amount} type="number" value={paymentEdit.amount} onChange={value => setPaymentEdit({ ...paymentEdit, amount: value })} required min="0.01" step="0.01" /><Field label={t.payments.paidAt} type="date" value={paymentEdit.paidAt} onChange={value => setPaymentEdit({ ...paymentEdit, paidAt: value })} required /><Field label={t.payments.note} value={paymentEdit.note} onChange={value => setPaymentEdit({ ...paymentEdit, note: value })} /><p>{t.payments.idempotent}</p><SaveButton busy={busy} label={t.save} busyLabel={t.saving} /></form></Modal>}
 
@@ -470,17 +467,21 @@ function InvoiceHeader({ title, month }: { title: string; month: string }) {
 function InvoiceIdentity({ record }: { record: MonthlyRecord }) {
   return <div className="invoice-identity"><div><span>عداد / قسم</span><strong>{record.meterSection}</strong></div><div><span>اسم المستثمر</span><strong>{record.occupant}</strong></div><div><span>رقم المستثمر</span><strong>{record.occupantNumber || "—"}</strong></div></div>;
 }
-function RentInvoice({ month, record, paid }: { month: string; record: MonthlyRecord; paid: number }) {
-  const total = record.rent + record.services;
-  return <article className="invoice-card rent-invoice"><InvoiceHeader title="فاتورة الإيجار" month={month} /><InvoiceIdentity record={record} /><div className="invoice-values two-values"><div><span>قيمة الإيجار</span><strong>{currency.format(record.rent)}</strong></div><div><span>قيمة الخدمات</span><strong>{currency.format(record.services)}</strong></div></div><footer className="invoice-total"><span>المجموع</span><strong>{currency.format(total)}</strong></footer><p className="invoice-balance">المدفوع: <bdi>{currency.format(paid)}</bdi> · المتبقي: <strong><bdi>{currency.format(roundedMoney(total - paid))}</bdi></strong></p></article>;
-}
-function ElectricityInvoice({ month, record, paid }: { month: string; record: MonthlyRecord; paid: number }) {
-  const usage = record.currentReading - record.previousReading;
-  const subscription = usage * record.kiloPrice + record.meterFee;
-  const difference = record.currentReading - record.previousReading;
-  const total = subscription + record.services + record.rent;
-  void difference; void total;
-  return <article className="invoice-card electricity-invoice"><InvoiceHeader title="فاتورة الكهرباء" month={month} /><InvoiceIdentity record={record} /><div className="invoice-values electricity-values"><div><span>العداد السابق</span><strong>{record.previousReading}</strong></div><div><span>العداد الحالي</span><strong>{record.currentReading}</strong></div><div><span>صرف العداد</span><strong>{usage}</strong></div><div><span>سعر الكيلو</span><strong>{currency.format(record.kiloPrice)}</strong></div><div><span>رسم العداد</span><strong>{currency.format(record.meterFee)}</strong></div></div><footer className="invoice-total"><span>قيمة الاشتراك</span><strong>{currency.format(roundedMoney(subscription))}</strong></footer><p className="invoice-balance">المدفوع: <bdi>{currency.format(paid)}</bdi> · المتبقي: <strong><bdi>{currency.format(roundedMoney(subscription - paid))}</bdi></strong></p></article>;
+// One invoice per shop: electricity for the month just read, and rent + services for the month
+// after it (rent is paid in advance). Electricity-only shops show no rent part.
+function MonthlyInvoice({ month, record, paidRent, paidElectricity }: { month: string; record: MonthlyRecord; paidRent: number; paidElectricity: number }) {
+  const { usage, electricity, rent } = recordCharges(record);
+  const hasRent = record.hasRent !== 0;
+  const total = roundedMoney(electricity + (hasRent ? rent : 0));
+  const paid = roundedMoney(paidElectricity + (hasRent ? paidRent : 0));
+  return <article className="invoice-card combined-invoice"><InvoiceHeader title={hasRent ? "فاتورة الإيجار والكهرباء" : "فاتورة الكهرباء"} month={month} /><InvoiceIdentity record={record} />
+    <h3 className="invoice-section-title">الكهرباء <small>عن شهر {monthLabel(month)}</small></h3>
+    <div className="invoice-values electricity-values"><div><span>العداد السابق</span><strong>{record.previousReading}</strong></div><div><span>العداد الحالي</span><strong>{record.currentReading}</strong></div><div><span>صرف العداد</span><strong>{usage}</strong></div><div><span>سعر الكيلو</span><strong>{currency.format(record.kiloPrice)}</strong></div><div><span>رسم العداد</span><strong>{currency.format(record.meterFee)}</strong></div></div>
+    <p className="invoice-subtotal"><span>قيمة الاشتراك</span><strong>{currency.format(electricity)}</strong></p>
+    {hasRent && <><h3 className="invoice-section-title">الإيجار والخدمات <small>عن شهر {monthLabel(nextMonth(month))}</small></h3>
+      <div className="invoice-values two-values"><div><span>قيمة الإيجار</span><strong>{currency.format(record.rent)}</strong></div><div><span>قيمة الخدمات</span><strong>{currency.format(record.services)}</strong></div></div>
+      <p className="invoice-subtotal"><span>مجموع الإيجار والخدمات</span><strong>{currency.format(rent)}</strong></p></>}
+    <footer className="invoice-total"><span>المجموع</span><strong>{currency.format(total)}</strong></footer><p className="invoice-balance">المدفوع: <bdi>{currency.format(paid)}</bdi> · المتبقي: <strong><bdi>{currency.format(roundedMoney(total - paid))}</bdi></strong></p></article>;
 }
 function Receipt({ payment, record }: { payment: Payment; record: MonthlyRecord }) {
   return <article className="invoice-card receipt-card"><InvoiceHeader title="إيصال قبض" month={record.month} /><p className="receipt-id">رقم الإيصال: {payment.id}</p><InvoiceIdentity record={record} /><p>نوع الفاتورة: {payment.kind === "rent" ? "الإيجار والخدمات" : "الكهرباء"}</p><footer className="invoice-total"><span>المبلغ المقبوض</span><strong>{currency.format(payment.amount)}</strong></footer><p>التاريخ: {payment.paidAt} · المحصّل: {payment.receivedBy}</p>{payment.note && <p>{payment.note}</p>}{payment.voidedAt && <p className="error-text">إيصال معكوس — {payment.voidReason} — بواسطة {payment.voidedBy}</p>}</article>;

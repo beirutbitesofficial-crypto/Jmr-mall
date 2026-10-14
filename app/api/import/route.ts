@@ -287,8 +287,8 @@ async function ensureMonth(db: D1Database, month: string): Promise<void> {
     db.prepare(carryForwardRecordsSql("d.active = 1")).bind(month, month),
     db.prepare(`INSERT OR IGNORE INTO record_meta (record_id, confirmed, revision)
       SELECT id, 0, 1 FROM monthly_records WHERE month = ?`).bind(month),
-    db.prepare(`INSERT OR IGNORE INTO monthly_snapshots (record_id, meter_section, category, owner, phone, occupant, occupant_number, rent_start, rent_end)
-      SELECT r.id,d.meter_section,d.category,d.owner,d.phone,d.occupant,d.occupant_number,d.rent_start,d.rent_end
+    db.prepare(`INSERT OR IGNORE INTO monthly_snapshots (record_id, meter_section, category, owner, phone, occupant, occupant_number, rent_start, rent_end, has_rent)
+      SELECT r.id,d.meter_section,d.category,d.owner,d.phone,d.occupant,d.occupant_number,d.rent_start,d.rent_end,d.has_rent
       FROM monthly_records r JOIN departments d ON d.id=r.department_id WHERE r.month=?`).bind(month),
   ]);
 }
@@ -362,12 +362,15 @@ async function commitRows(db: D1Database, rows: ParsedRow[], month: string, crea
       row.previousReading ?? previousReading, row.currentReading ?? currentReading, record.id,
     ).run();
     await db.prepare("INSERT OR IGNORE INTO record_meta (record_id, confirmed, revision) VALUES (?, 0, 1)").bind(record.id).run();
-    await db.prepare(`INSERT OR IGNORE INTO monthly_snapshots (record_id, meter_section, category, owner, phone, occupant, occupant_number, rent_start, rent_end)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
+    await db.prepare(`INSERT OR IGNORE INTO monthly_snapshots (record_id, meter_section, category, owner, phone, occupant, occupant_number, rent_start, rent_end, has_rent)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT has_rent FROM departments WHERE id=?))`).bind(
       record.id, row.meterSection, row.category ?? department.category, row.owner ?? department.owner, row.phone ?? department.phone,
       row.occupant ?? department.occupant, row.occupantNumber ?? department.occupantNumber,
-      row.rentStart ?? department.rentStart ?? "", row.rentEnd ?? department.rentEnd ?? "",
+      row.rentStart ?? department.rentStart ?? "", row.rentEnd ?? department.rentEnd ?? "", department.id,
     ).run();
+    // Rent or services cells for an electricity-only shop are not charged.
+    await db.prepare(`UPDATE monthly_records SET rent=0, services=0 WHERE id=?
+      AND EXISTS (SELECT 1 FROM monthly_snapshots WHERE record_id=? AND has_rent=0)`).bind(record.id, record.id).run();
     await db.prepare(`UPDATE monthly_snapshots SET meter_section=?, category=?, owner=?, phone=?, occupant=?, occupant_number=?, rent_start=?, rent_end=? WHERE record_id=?`).bind(
       row.meterSection, row.category ?? department.category, row.owner ?? department.owner, row.phone ?? department.phone,
       row.occupant ?? department.occupant, row.occupantNumber ?? department.occupantNumber,
