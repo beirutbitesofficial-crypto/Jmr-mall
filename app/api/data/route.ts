@@ -117,8 +117,15 @@ export async function GET(request: Request) {
           FROM audit_log ORDER BY created_at DESC LIMIT 200`).all<AuditEntry>()).results
       : [];
 
+    const lastBackup = actor.role === "owner"
+      ? await db.prepare("SELECT value FROM app_settings WHERE key = 'last_backup_at'").first<{ value: string }>()
+      : null;
+
     return jsonNoStore({
       actor,
+      lastBackupAt: lastBackup?.value ?? null,
+      // A backup is due when none was downloaded in the last 30 days.
+      backupDue: actor.role === "owner" && (!lastBackup || Date.now() - Date.parse(lastBackup.value) > 30 * 86_400_000),
       departments: departments.results,
       records: records.results,
       months: months.results,

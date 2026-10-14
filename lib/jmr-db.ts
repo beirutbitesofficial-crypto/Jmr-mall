@@ -190,6 +190,8 @@ export async function initDatabase(): Promise<void> {
       // approved month's invoices keep the setting they were issued with.
       await client.query("ALTER TABLE departments ADD COLUMN IF NOT EXISTS has_rent integer NOT NULL DEFAULT 1");
       await client.query("ALTER TABLE IF EXISTS monthly_snapshots ADD COLUMN IF NOT EXISTS has_rent integer NOT NULL DEFAULT 1");
+      // Small app-wide values, such as when the last backup was downloaded.
+      await client.query("CREATE TABLE IF NOT EXISTS app_settings (key text PRIMARY KEY NOT NULL, value text NOT NULL)");
       await client.query(`CREATE TABLE IF NOT EXISTS auth_login_rate_limits (
         client_key text PRIMARY KEY NOT NULL, failure_count integer NOT NULL DEFAULT 0,
         window_started_at bigint NOT NULL, updated_at bigint NOT NULL)`);

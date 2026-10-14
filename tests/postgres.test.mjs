@@ -23,6 +23,7 @@ test("accounting rules hold on a real PostgreSQL database", { skip: !url && "TES
   const loginRoute = await import("../app/api/auth/login/route.ts");
   const sessionRoute = await import("../app/api/auth/session/route.ts");
   const logoutRoute = await import("../app/api/auth/logout/route.ts");
+  const backupRoute = await import("../app/api/backup/route.ts");
   const importer = await import("../app/api/import/route.ts");
   const { transaction, getDb } = await import("../lib/jmr-db.ts");
   const { nextMonth } = await import("../lib/jmr-core.ts");
@@ -173,6 +174,31 @@ test("accounting rules hold on a real PostgreSQL database", { skip: !url && "TES
     const approvedB = after2.records.find(record => record.month === month && record.meterSection === "B-2");
     assert.deepEqual([approvedB.hasRent, approvedB.rent], [1, 100], "the approved month keeps its invoice");
     assert.equal(after2.departments.find(item => item.id === shopB.id).hasRent, 0);
+
+    // ---- Settings: backup, factory reset and restore ----
+    const before = await state();
+    assert.equal(before.lastBackupAt, null);
+    const backupResponse = await backupRoute.GET(new Request(`${origin}/api/backup`, { headers: { cookie } }));
+    assert.equal(backupResponse.status, 200);
+    const backup = await backupResponse.json();
+    assert.equal(backup.format, "jmr-business-backup");
+    assert.ok((await state()).lastBackupAt, "the download date is remembered");
+    const backupPost = (body, as = cookie) => backupRoute.POST(new Request(`${origin}/api/backup`, {
+      method: "POST", headers: { origin, "content-type": "application/json", cookie: as }, body: JSON.stringify(body) }));
+    assert.equal((await backupPost({ action: "factoryReset", confirm: "reset" })).status, 400, "the word must be typed exactly");
+    assert.equal((await backupPost({ action: "factoryReset", confirm: "RESET" })).status, 200);
+    const wiped = await state();
+    assert.deepEqual([wiped.departments.length, wiped.records.length, wiped.months.length, wiped.payments.length], [0, 0, 0, 0]);
+    assert.ok(wiped.users.length > 0, "accounts survive a factory reset");
+    assert.equal((await backupPost({ action: "restore", confirm: "RESTORE", backup: { format: "something-else" } })).status, 400);
+    const restoreResponse = await backupPost({ action: "restore", confirm: "RESTORE", backup });
+    assert.equal(restoreResponse.status, 200, await restoreResponse.clone().text());
+    const restored = await state();
+    const shape = data => JSON.stringify([data.departments, data.records, data.months, data.payments]);
+    assert.equal(shape(restored), shape(before), "everything comes back exactly");
+    // New rows continue after the restored ids.
+    await ok({ action: "addDepartment", department: { ...department, meterSection: "R-7" } });
+    await ok({ action: "updateDepartment", id: (await state()).departments.find(item => item.meterSection === "R-7").id, department: { ...department, meterSection: "R-7", active: 0 } });
 
     // Behind Hostinger's proxy the request URL is internal; the Host header identifies the site.
     const proxied = new Request("http://127.0.0.1:3000/api/data", { method: "POST", headers: { origin, host: "mall.example", "content-type": "application/json", cookie }, body: JSON.stringify({ action: "none" }) });
