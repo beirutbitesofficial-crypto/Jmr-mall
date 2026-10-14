@@ -197,6 +197,19 @@ td .primary,td .secondary,td .danger-button { min-height:34px; padding:0 12px; f
 .invoice-card p { margin:8px 0 0; }
 .invoice-balance { color:var(--muted); font-size:13px; }
 .invoice-note { margin:0; color:var(--muted); font-size:13px; }
+/* Settings */
+.settings-page { display:grid; gap:16px; max-width:860px; }
+.settings-card .panel-head p { max-width:62ch; }
+.settings-row { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; padding:14px 20px; border-top:1px solid var(--line); }
+.settings-row>span { display:flex; align-items:center; gap:8px; flex-wrap:wrap; color:var(--ink-2); }
+.segmented { display:inline-flex; background:var(--segment); border-radius:10px; padding:4px; gap:2px; }
+.segmented button { border:0; color:var(--muted); background:transparent; min-height:34px; padding:0 16px; border-radius:7px; font-size:13px; font-weight:600; cursor:pointer; }
+.segmented button.active { color:var(--brand-ink); background:var(--segment-on); box-shadow:var(--shadow); }
+.file-button { position:relative; display:inline-flex; align-items:center; cursor:pointer; }
+.file-button input { position:absolute; inset:0; opacity:0; cursor:pointer; }
+.file-button.is-disabled { opacity:.55; pointer-events:none; }
+.danger-zone { border-color:var(--red-line); }
+.danger-zone h2 { color:var(--red); }
 /* The mall's receipt strip (four per A4 page when printed). */
 .bill-grid { grid-template-columns:1fr; }
 .bill { background:var(--paper); border:1px solid var(--paper-line); padding:12px 14px; display:flex; flex-direction:column; gap:8px; break-inside:avoid; box-shadow:var(--shadow); }

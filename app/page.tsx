@@ -9,7 +9,7 @@ import {
 import { dictionary, monthName, translateMessage, type Lang } from "@/lib/i18n";
 import { usePrefs } from "@/lib/prefs";
 
-type Page = "audit" | "departments" | "invoices" | "payments" | "users" | "history";
+type Page = "audit" | "departments" | "invoices" | "payments" | "users" | "history" | "settings";
 type AuthState = "checking" | "signedOut" | "signedIn";
 type Toast = { message: string; tone: "success" | "error" } | null;
 type DataPayload = {
@@ -20,6 +20,8 @@ type DataPayload = {
   payments: Payment[];
   users: PublicUser[];
   audit: AuditEntry[];
+  lastBackupAt: string | null;
+  backupDue: boolean;
 };
 
 type DepartmentDraft = Omit<Department, "id">;
@@ -27,7 +29,7 @@ type RecordDraft = Pick<MonthlyRecord, "meterFee" | "kiloPrice" | "rent" | "serv
 type UserDraft = { id?: string; username: string; name: string; role: Role; active: number; password: string; managed?: boolean };
 type PaymentDraft = { recordId: number; kind: PaymentKind; amount: string; paidAt: string; note: string; requestId: string };
 
-const pages: Page[] = ["audit", "departments", "invoices", "payments", "users", "history"];
+const pages: Page[] = ["audit", "departments", "invoices", "payments", "users", "history", "settings"];
 const emptyDepartment: DepartmentDraft = {
   meterSection: "", category: "", owner: "", phone: "", occupant: "", occupantNumber: "",
   rentStart: "", rentEnd: "", active: 1, hasRent: 1,
@@ -263,6 +265,44 @@ export default function Home() {
     });
   }
 
+  // Settings: backups are a JSON file of all shops, months, readings, payments and the change log.
+  async function saveBackupFile() {
+    const response = await fetch("/api/backup", { cache: "no-store" });
+    if (!response.ok) { await apiJson(response, lang); return; }
+    const name = /filename="([^"]+)"/.exec(response.headers.get("content-disposition") ?? "")?.[1] ?? "JMR-backup.json";
+    const url = URL.createObjectURL(await response.blob());
+    const anchor = document.createElement("a");
+    anchor.href = url; anchor.download = name; document.body.appendChild(anchor); anchor.click(); anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  async function downloadBackup() {
+    await run(async () => { await saveBackupFile(); await refresh(); notify(t.settings.backupDone); });
+  }
+
+  async function restoreBackup(file: File) {
+    let backup: unknown;
+    try { backup = JSON.parse(await file.text()); } catch { notify(t.settings.notBackup, "error"); return; }
+    const info = backup as { exportedAt?: string; data?: Record<string, unknown[]> };
+    if (!info?.data) { notify(t.settings.notBackup, "error"); return; }
+    const summary = t.settings.restoreSummary(formatDate(String(info.exportedAt ?? "")), info.data.departments?.length ?? 0, info.data.monthStatus?.length ?? 0, info.data.payments?.length ?? 0);
+    if (window.prompt(`${summary}\n\n${t.settings.restoreConfirm}`)?.trim() !== "RESTORE") return;
+    await run(async () => {
+      const result = await apiJson(await fetch("/api/backup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "restore", confirm: "RESTORE", backup }) }), lang);
+      setRowDrafts({}); await refresh(); notify(String(result.message ?? t.saved));
+    });
+  }
+
+  async function factoryReset() {
+    if (window.prompt(t.settings.resetConfirm)?.trim() !== "RESET") return;
+    await run(async () => {
+      // A copy is always downloaded first, so a reset can be undone with Restore.
+      await saveBackupFile();
+      const result = await apiJson(await fetch("/api/backup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "factoryReset", confirm: "RESET" }) }), lang);
+      setRowDrafts({}); await refresh(); notify(String(result.message ?? t.saved));
+    });
+  }
+
   function startDepartment(department: Department) {
     // Keep every master-data field populated when opening Edit, even when legacy/imported rows contain NULLs.
     setDepartmentEdit({ id: department.id, draft: {
@@ -328,6 +368,7 @@ export default function Home() {
         </header>
 
         {stale && <div className="notice-banner error">{t.staleBanner}</div>}
+        {owner && data.backupDue && data.months.length > 0 && page !== "settings" && <div className="notice-banner"><span><strong>{t.settings.backupDue}:</strong> {t.settings.reminder}</span><button className="secondary" disabled={busy || formOpen || hasDrafts} onClick={() => setPage("settings")}>{t.nav.settings}</button></div>}
 
         {(page === "audit" || page === "invoices" || page === "payments") && <div className="toolbar">
           <label className="month-picker">{t.month}<input type="month" value={month} min="2000-01" max="2099-12" disabled={busy || formOpen || hasDrafts} onChange={event => event.target.value && setMonth(event.target.value)} /></label>
@@ -399,6 +440,21 @@ export default function Home() {
           <div className="role-guide">{(["owner", "accountant", "viewer"] as const).map(role => <div key={role}><span className={`badge role-${role}`}>{t.roles[role]}</span><p>{t.roleHelp[role]}</p></div>)}</div>
           <div className="table-wrap"><table><thead><tr><th>{t.users.cols.name}</th><th>{t.users.cols.username}</th><th>{t.users.cols.role}</th><th>{t.users.cols.status}</th><th>{t.users.cols.action}</th></tr></thead><tbody>{data.users.map(user => <tr key={user.id}><td><strong>{user.name}</strong>{user.id === data.actor.id && <small>{t.users.you}</small>}{user.managed && <small>{t.users.mainAccount}</small>}</td><td className="mono-text">{user.username}</td><td><span className={`badge role-${user.role}`}>{t.roles[user.role]}</span></td><td><span className={`badge ${user.active ? "done" : "muted"}`}>{user.active ? t.users.active : t.users.disabled}</span></td><td><button className="secondary" disabled={disabled} onClick={() => setUserEdit({ ...user, password: "" })}>{t.users.edit}</button></td></tr>)}</tbody></table></div></section>}
 
+        {page === "settings" && <section className="settings-page">
+          <section className="panel settings-card"><div className="panel-head"><div><h2>{t.settings.appearance}</h2><p>{t.settings.appearanceHelp}</p></div></div>
+            <div className="settings-row"><span>{t.settings.theme}</span><div className="segmented" role="group" aria-label={t.settings.theme}>{(["light", "dark"] as const).map(value => <button key={value} type="button" className={theme === value ? "active" : ""} aria-pressed={theme === value} onClick={() => { if (theme !== value) toggleTheme(); }}>{value === "light" ? t.settings.light : t.settings.dark}</button>)}</div></div>
+            <div className="settings-row"><span>{t.settings.language}</span><div className="segmented" role="group" aria-label={t.settings.language}>{(["en", "ar"] as const).map(value => <button key={value} type="button" className={lang === value ? "active" : ""} aria-pressed={lang === value} onClick={() => { if (lang !== value) toggleLang(); }}>{value === "en" ? "English" : "العربية"}</button>)}</div></div>
+          </section>
+          {owner && <section className="panel settings-card"><div className="panel-head"><div><h2>{t.settings.backupTitle}</h2><p>{t.settings.backupHelp}</p></div></div>
+            <div className="settings-row"><span>{t.settings.lastBackup}: <strong>{data.lastBackupAt ? formatDate(data.lastBackupAt) : t.settings.never}</strong>{data.backupDue && <span className="badge pending">{t.settings.backupDue}</span>}</span><button className="primary" disabled={disabled} onClick={() => void downloadBackup()}>{t.settings.download}</button></div>
+          </section>}
+          {owner && <section className="panel settings-card"><div className="panel-head"><div><h2>{t.settings.restoreTitle}</h2><p>{t.settings.restoreHelp}</p></div></div>
+            <div className="settings-row"><span>{t.settings.restorePick}</span><label className={`secondary file-button ${disabled ? "is-disabled" : ""}`}><input type="file" accept="application/json,.json" disabled={disabled} onChange={event => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void restoreBackup(file); }} />{t.settings.chooseFile}</label></div>
+          </section>}
+          {owner && <section className="panel settings-card danger-zone"><div className="panel-head"><div><h2>{t.settings.resetTitle}</h2><p>{t.settings.resetHelp}</p></div></div>
+            <div className="settings-row"><span>{t.settings.resetKeeps}</span><button className="danger-button" disabled={disabled} onClick={() => void factoryReset()}>{t.settings.resetButton}</button></div>
+          </section>}
+        </section>}
         {page === "history" && owner && <section className="panel"><div className="panel-head"><div><h2>{t.history.title}</h2><p>{t.history.subtitle}</p></div></div><div className="table-wrap"><table><thead><tr><th>{t.history.cols.date}</th><th>{t.history.cols.user}</th><th>{t.history.cols.action}</th><th>{t.history.cols.detail}</th></tr></thead><tbody>{data.audit.map(entry => <tr key={entry.id}><td className="nowrap">{formatDate(entry.createdAt)}</td><td>{entry.actorName}</td><td><code>{entry.action}</code></td><td>{entry.detail}</td></tr>)}</tbody></table></div></section>}
       </section>
 
@@ -442,6 +498,7 @@ const iconPaths: Record<string, string> = {
   payments: "M3 7h18v10H3zM3 11h18M7 15h3",
   users: "M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM2 21v-1a6 6 0 0 1 12 0v1M16 3.5a4 4 0 0 1 0 7.5M22 21v-1a6 6 0 0 0-4-5.6",
   history: "M12 7v5l3 2M3.5 12a8.5 8.5 0 1 0 2.5-6L3 9M3 4v5h5",
+  settings: "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z",
   import: "M12 3v12M7 10l5 5 5-5M4 21h16",
   sun: "M12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4",
   moon: "M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z",

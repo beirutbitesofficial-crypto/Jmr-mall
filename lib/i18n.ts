@@ -5,7 +5,7 @@ export type Lang = "en" | "ar";
 const en = {
   appTagline: "Fixed numbers, clear permissions, and a full record of every change.",
   loading: "Loading…",
-  nav: { audit: "Monthly audit", departments: "Shops & tenants", invoices: "Invoices & printing", payments: "Collections & receipts", users: "Users & roles", history: "Change log", import: "Excel import" },
+  nav: { audit: "Monthly audit", departments: "Shops & tenants", invoices: "Invoices & printing", payments: "Collections & receipts", users: "Users & roles", history: "Change log", settings: "Settings", import: "Excel import" },
   signIn: {
     title: "Sign in", subtitle: "Personal accounts with separate permissions for each user.",
     username: "Username", password: "Password", submit: "Sign in", checking: "Checking…", done: "Signed in",
@@ -42,6 +42,18 @@ const en = {
     cols: { section: "Shop", category: "Type", owner: "Owner", occupant: "Tenant", contract: "Contract", status: "Status", action: "Action" },
     active: "Active", archived: "Archived", activeCheck: "Active shop", hasRentCheck: "Pays rent and services", hasRentHint: "Untick for shops that pay electricity only. Their invoices show no rent part.", electricityOnly: "Electricity only",
     fields: { meterSection: "Meter / Shop", category: "Shop type", owner: "Shop owner", phone: "Phone", occupant: "Tenant", occupantNumber: "Tenant number", rentStart: "Rent start", rentEnd: "Rent end" },
+  },
+  settings: {
+    appearance: "Appearance", appearanceHelp: "Saved on this device.", theme: "Theme", light: "Light", dark: "Dark", language: "Language",
+    backupTitle: "Monthly backup", backupHelp: "Download a backup file at least once a month, after approving the month, and keep it somewhere safe (email, Google Drive). It holds every shop, month, reading, payment and the change log. Accounts and passwords are not included.",
+    lastBackup: "Last backup", never: "never", reminder: "no backup was downloaded in the last 30 days.", backupDue: "Backup due", download: "Download backup", backupDone: "Backup downloaded",
+    restoreTitle: "Restore a backup", restoreHelp: "Replaces all current shops, months, readings and payments with the ones in a backup file. Accounts stay as they are.",
+    restorePick: "Backup file (.json)", chooseFile: "Choose file…", notBackup: "This file is not a backup from this app",
+    restoreSummary: (date: string, shops: number, months: number, payments: number) => `Backup from ${date}: ${shops} shops, ${months} months, ${payments} payments. All current data will be replaced.`,
+    restoreConfirm: "Type RESTORE to continue.",
+    resetTitle: "Factory reset", resetHelp: "Deletes every shop, month, reading, payment and the change log, to start from zero. A backup is downloaded first, so you can undo it with Restore.",
+    resetKeeps: "Accounts and passwords are kept.", resetButton: "Factory reset…",
+    resetConfirm: "This deletes all data in the app (a backup downloads first). Type RESET to continue.",
   },
   invoices: {
     print: "Print invoices", combinedNote: "One invoice per shop: electricity for this month, and rent and services for next month (paid in advance).",
@@ -100,7 +112,7 @@ const en = {
 const ar: typeof en = {
   appTagline: "أرقام ثابتة، صلاحيات واضحة، وسجل كامل لكل تعديل.",
   loading: "جاري تحميل النظام…",
-  nav: { audit: "التدقيق الشهري", departments: "الأقسام والمستأجرون", invoices: "الفواتير والطباعة", payments: "التحصيل والإيصالات", users: "المستخدمون والصلاحيات", history: "سجل التعديلات", import: "استيراد Excel" },
+  nav: { audit: "التدقيق الشهري", departments: "الأقسام والمستأجرون", invoices: "الفواتير والطباعة", payments: "التحصيل والإيصالات", users: "المستخدمون والصلاحيات", history: "سجل التعديلات", settings: "الإعدادات", import: "استيراد Excel" },
   signIn: {
     title: "تسجيل الدخول", subtitle: "حساب شخصي وصلاحيات منفصلة لكل مستخدم.",
     username: "اسم المستخدم", password: "كلمة المرور", submit: "دخول آمن", checking: "جاري التحقق…", done: "تم تسجيل الدخول",
@@ -137,6 +149,18 @@ const ar: typeof en = {
     cols: { section: "القسم", category: "النوع", owner: "المالك", occupant: "المستثمر", contract: "العقد", status: "الحالة", action: "إجراء" },
     active: "فعّال", archived: "مؤرشف", activeCheck: "قسم فعّال", hasRentCheck: "بيدفع إيجار وخدمات", hasRentHint: "شيل الإشارة للأقسام يلي بتدفع كهرباء بس. فاتورتهم بتطلع بلا إيجار.", electricityOnly: "كهرباء فقط",
     fields: { meterSection: "عداد / قسم", category: "نوعية القسم", owner: "صاحب القسم", phone: "رقم التلفون", occupant: "مستخدم القسم", occupantNumber: "رقم المستخدم", rentStart: "تاريخ بدء الإيجار", rentEnd: "تاريخ انتهاء الإيجار" },
+  },
+  settings: {
+    appearance: "المظهر", appearanceHelp: "بينحفظ على هالجهاز.", theme: "الوضع", light: "فاتح", dark: "داكن", language: "اللغة",
+    backupTitle: "النسخة الاحتياطية الشهرية", backupHelp: "نزّل نسخة احتياطية مرة بالشهر على الأقل، بعد اعتماد الشهر، وخبّيها بمكان آمن (إيميل، Google Drive). فيها كل الأقسام والأشهر والقراءات والدفعات وسجل التعديلات. الحسابات وكلمات المرور مش فيها.",
+    lastBackup: "آخر نسخة", never: "ولا مرة", reminder: "ما نزلت نسخة احتياطية من أكتر من 30 يوم.", backupDue: "صار وقت النسخة", download: "تنزيل نسخة احتياطية", backupDone: "تم تنزيل النسخة الاحتياطية",
+    restoreTitle: "استرجاع نسخة احتياطية", restoreHelp: "بيستبدل كل الأقسام والأشهر والقراءات والدفعات الحالية باللي بالملف. الحسابات بتبقى متل ما هي.",
+    restorePick: "ملف النسخة (.json)", chooseFile: "اختيار ملف…", notBackup: "هالملف مش نسخة احتياطية من هالتطبيق",
+    restoreSummary: (date: string, shops: number, months: number, payments: number) => `نسخة من ${date}: ${shops} قسم، ${months} شهر، ${payments} دفعة. كل البيانات الحالية رح تنستبدل.`,
+    restoreConfirm: "اكتب RESTORE للمتابعة.",
+    resetTitle: "إعادة ضبط المصنع", resetHelp: "بيمحي كل الأقسام والأشهر والقراءات والدفعات وسجل التعديلات لتبلّش من الصفر. قبلها بتنزل نسخة احتياطية، فيك ترجّعها بالاسترجاع.",
+    resetKeeps: "الحسابات وكلمات المرور بيبقوا.", resetButton: "إعادة ضبط المصنع…",
+    resetConfirm: "هيدا بيمحي كل بيانات التطبيق (بتنزل نسخة احتياطية قبل). اكتب RESET للمتابعة.",
   },
   invoices: {
     print: "طباعة الفواتير", combinedNote: "فاتورة وحدة لكل قسم: الكهرباء عن هالشهر، والإيجار والخدمات عن الشهر الجاي (بتندفع سلف).",
@@ -241,6 +265,11 @@ const serverMessages: Record<string, string> = {
   "نوع الاشتراك غير صالح": "Invalid billing type",
   "الملف لازم يكون Excel (.xlsx أو .xls)": "The file must be Excel (.xlsx or .xls)",
   "النسخة الاحتياطية متاحة للمالك فقط": "Backups are for the owner only",
+  "اكتب RESET للتأكيد": "Type RESET to confirm",
+  "اكتب RESTORE للتأكيد": "Type RESTORE to confirm",
+  "الملف مش نسخة احتياطية من هالتطبيق": "This file is not a backup from this app",
+  "تمت إعادة ضبط التطبيق. الحسابات بقيت كما هي.": "The app was reset. Accounts were kept.",
+  "تم استرجاع النسخة الاحتياطية": "Backup restored",
   "انتهت الجلسة. سجّل الدخول من جديد": "Session ended. Sign in again.",
   "بيانات الدخول غير صحيحة": "Wrong sign-in details",
   "أضف JMR_ADMIN_USERNAME وJMR_ADMIN_PASSWORD بإعدادات Hostinger": "Add JMR_ADMIN_USERNAME and JMR_ADMIN_PASSWORD in the Hostinger settings, then redeploy",
@@ -296,6 +325,8 @@ const serverMessages: Record<string, string> = {
   "العداد السابق": "previous reading", "العداد الحالي": "current reading", "رسم العداد": "meter fee",
 };
 const serverPatterns: [RegExp, (...parts: string[]) => string][] = [
+  [/^النسخة ناقصة: (\S+)$/, part => `The backup is missing: ${part}`],
+  [/^صف غير صالح في (\S+)$/, part => `Invalid row in ${part}`],
   [/^الشهر التالي لازم يكون (\S+)$/, month => `The next month must be ${month}`],
   [/^اعتمد شهر (\S+) قبل استيراد شهر جديد$/, month => `Approve ${month} before importing a new month`],
   [/^الاستيراد متاح لآخر شهر \((\S+)\) فقط\. الأشهر السابقة أرشيف ثابت\.$/, month => `Imports are only allowed into the latest month (${month}). Earlier months are a fixed archive.`],
