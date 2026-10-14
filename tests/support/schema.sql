@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS users (
   );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_jmr_users_username_nocase ON users ((lower(username)));
 CREATE TABLE IF NOT EXISTS sessions (
-    id TEXT PRIMARY KEY NOT NULL, user_id TEXT NOT NULL, session_version INTEGER NOT NULL, expires_at BIGINT NOT NULL, created_at BIGINT NOT NULL, client_fingerprint TEXT
+    id TEXT PRIMARY KEY NOT NULL, user_id TEXT NOT NULL, session_version INTEGER NOT NULL, expires_at BIGINT NOT NULL, created_at BIGINT NOT NULL
   );
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
 CREATE TABLE IF NOT EXISTS payments (
